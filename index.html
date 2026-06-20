@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Warehouse Order System</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app-shell">
+  <div class="app-header">
+    <div>
+      <div class="app-title">Warehouse Order System</div>
+      <div class="app-sub">Enter orders, manage routes, print pick lists</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span class="save-status" id="save-status"><i class="ti ti-cloud"></i> Connecting…</span>
+      <button class="btn" onclick="toggleTheme()" id="theme-toggle-btn"><i class="ti ti-moon"></i></button>
+      <button class="btn" onclick="exportBackup()"><i class="ti ti-download"></i> Backup data</button>
+      <label class="btn" style="cursor:pointer"><i class="ti ti-upload"></i> Restore backup <input type="file" accept=".json" style="display:none" onchange="importBackup(event)"></label>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('entry')">Order entry</button>
+    <button class="tab" onclick="switchTab('routes')">Pick lists <span class="tab-badge" id="routes-badge">0</span></button>
+    <button class="tab" onclick="switchTab('log')">Orders log <span class="tab-badge" id="log-badge">0</span></button>
+    <button class="tab" onclick="switchTab('products')">Products</button>
+    <button class="tab" onclick="switchTab('customers')">Customers</button>
+    <button class="tab" onclick="switchTab('tiers')">Price tiers</button>
+  </div>
+
+  <!-- ORDER ENTRY -->
+  <div id="tab-entry">
+    <div class="section">
+      <div class="section-title">Order details</div>
+      <div class="header-grid">
+        <div class="field"><label>Customer</label>
+          <select id="cust-select" onchange="onCustChange()"><option value="">— Select customer —</option></select>
+        </div>
+        <div class="field"><label>Order type</label>
+          <select id="type-select" onchange="onTypeChange()">
+            <option value="Retail">Retail</option>
+            <option value="Wholesale">Wholesale</option>
+            <option value="Custom" selected>Custom (tier-based)</option>
+          </select>
+        </div>
+        <div class="field"><label>Delivery date</label><input type="date" id="del-date"></div>
+        <div class="field"><label>Driver / route</label>
+          <select id="driver-select">
+            <option value="">— Assign route —</option>
+            <option>Route 1 – North</option><option>Route 2 – South</option><option>Route 3 – East</option>
+            <option>Route 4 – West</option><option>Route 5 – City</option><option>Route 6 – Collect</option>
+          </select>
+        </div>
+      </div>
+      <div id="cust-info-bar" style="display:none;margin-top:10px;padding:8px 12px;background:var(--amber-bg);border:1px solid #fcd34d;border-radius:var(--radius);font-size:12px;color:var(--amber-text)">
+        <i class="ti ti-note" style="margin-right:4px"></i><span id="cust-info-text"></span>
+      </div>
+    </div>
+    <div class="section">
+      <div class="section-title">Order lines <span id="line-count" style="font-weight:400;color:#9a9a97"></span></div>
+      <div class="lines-header">
+        <span></span><span>Product</span><span style="text-align:center">Qty</span>
+        <span style="text-align:right">Unit price</span><span style="text-align:right">Line total</span><span></span>
+      </div>
+      <div class="order-lines" id="lines-container"></div>
+      <button class="add-row-btn" onclick="addLine()">
+        <i class="ti ti-plus"></i> Add line
+        <span style="color:#9a9a97;font-size:12px;margin-left:4px">(or press Enter on last row)</span>
+      </button>
+      <div class="totals-row">
+        <div style="text-align:right"><div class="t-label">Items</div><div class="t-val" id="total-items">0</div></div>
+        <div style="text-align:right"><div class="t-label">Order total</div><div class="t-val" id="order-total">£0.00</div></div>
+      </div>
+    </div>
+    <div class="actions">
+      <div class="saved-banner" id="saved-banner"><i class="ti ti-check"></i> Order saved</div>
+      <button class="btn" onclick="clearOrder()"><i class="ti ti-refresh"></i> Clear</button>
+      <button class="btn btn-primary" onclick="saveOrder()"><i class="ti ti-device-floppy"></i> Save order</button>
+    </div>
+  </div>
+
+  <!-- ROUTES TAB -->
+  <div id="tab-routes" style="display:none"><div id="routes-content"></div></div>
+
+  <!-- LOG TAB -->
+  <div id="tab-log" style="display:none">
+    <div class="section"><div class="section-title">All orders</div><div id="log-body"><div class="no-items">No orders saved yet</div></div></div>
+  </div>
+
+  <!-- PRODUCTS TAB -->
+  <div id="tab-products" style="display:none">
+    <div class="section">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;gap:10px;flex-wrap:wrap">
+        <div><div class="section-title" style="margin-bottom:2px">Products</div>
+          <div style="font-size:12px;color:var(--text2)">Shorthands, prices and tier prices. All changes save automatically.</div>
+        </div>
+        <div class="export-bar">
+          <button class="btn" onclick="exportProductsCSV()"><i class="ti ti-download"></i> Export CSV</button>
+          <button class="btn btn-primary" onclick="addProduct()"><i class="ti ti-plus"></i> Add product</button>
+        </div>
+      </div>
+      <div id="products-msg"></div>
+      <div class="cat-filter" id="cat-filter"></div>
+      <div class="pm-grid" id="pm-grid"></div>
+    </div>
+  </div>
+
+  <!-- CUSTOMERS TAB -->
+  <div id="tab-customers" style="display:none">
+    <div class="section">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;gap:10px;flex-wrap:wrap">
+        <div><div class="section-title" style="margin-bottom:2px">Customers</div>
+          <div style="font-size:12px;color:var(--text2)">Assign price tiers and add per-product overrides. All changes save automatically.</div>
+        </div>
+        <div class="export-bar">
+          <button class="btn" onclick="exportCustomersCSV()"><i class="ti ti-download"></i> Export CSV</button>
+          <button class="btn btn-primary" onclick="addCustomer()"><i class="ti ti-plus"></i> Add customer</button>
+        </div>
+      </div>
+      <div id="customers-msg"></div>
+      <div class="cm-grid" id="cm-grid"></div>
+    </div>
+  </div>
+
+  <!-- PRICE TIERS TAB -->
+  <div id="tab-tiers" style="display:none">
+    <div class="section">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;gap:10px;flex-wrap:wrap">
+        <div><div class="section-title" style="margin-bottom:2px">Price tiers</div>
+          <div style="font-size:12px;color:var(--text2)">Define named price bands (like Sage price lists). Assign customers to a tier in the Customers tab.</div>
+        </div>
+        <button class="btn btn-primary" onclick="addTier()"><i class="ti ti-plus"></i> Add tier</button>
+      </div>
+      <div class="info-box">
+        When order type is set to <strong>Custom (tier-based)</strong>, pricing works like this:
+        <strong>1)</strong> Check for a per-product override on this customer → use it if found.
+        <strong>2)</strong> Otherwise use the customer's assigned tier price for this product.
+        <strong>3)</strong> If no tier price, fall back to Wholesale price.
+      </div>
+      <div class="tier-grid" id="tier-grid"></div>
+    </div>
+  </div>
+<!-- EDIT ORDER MODAL -->
+<div id="edit-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeEditModal()">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="edit-modal-title">Edit order</div>
+      <button class="modal-close" onclick="closeEditModal()"><i class="ti ti-x"></i></button>
+    </div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1.2fr;gap:8px;margin-bottom:14px">
+        <div class="field"><label>Customer</label><select id="edit-cust"></select></div>
+        <div class="field"><label>Order type</label>
+          <select id="edit-type">
+            <option value="Retail">Retail</option>
+            <option value="Wholesale">Wholesale</option>
+            <option value="Custom" selected>Custom (tier-based)</option>
+          </select>
+        </div>
+        <div class="field"><label>Delivery date</label><input type="date" id="edit-date"></div>
+        <div class="field"><label>Driver / route</label>
+          <select id="edit-driver">
+            <option value="">— Assign route —</option>
+            <option>Route 1 – North</option><option>Route 2 – South</option><option>Route 3 – East</option>
+            <option>Route 4 – West</option><option>Route 5 – City</option><option>Route 6 – Collect</option>
+          </select>
+        </div>
+      </div>
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--text3);margin-bottom:6px">Order lines</div>
+      <div class="lines-header" style="margin-bottom:4px">
+        <span></span><span>Product</span><span style="text-align:center">Qty</span>
+        <span style="text-align:right">Unit price</span><span style="text-align:right">Line total</span><span></span>
+      </div>
+      <div id="edit-lines"></div>
+      <button class="add-row-btn" onclick="addEditLine()"><i class="ti ti-plus"></i> Add line</button>
+      <div class="totals-row">
+        <div style="text-align:right"><div class="t-label">Order total</div><div class="t-val" id="edit-total">£0.00</div></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-danger" onclick="deleteOrder()"><i class="ti ti-trash"></i> Delete order</button>
+      <button class="btn" onclick="closeEditModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveEditOrder()"><i class="ti ti-check"></i> Save changes</button>
+    </div>
+  </div>
+</div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
