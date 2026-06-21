@@ -296,19 +296,31 @@ function scheduleSave(){
 }
 
 // ── PRICING LOGIC ─────────────────────────────────────────────────────────────
-function getPrice(code,type,custName){
+function getPrice(code,tierName,custName){
   const p=PRODUCTS.find(x=>x.code===code);if(!p)return 0;
-  if(type==='Retail')return p.retail;
-  if(type==='Wholesale')return p.wholesale;
-  // Custom (tier-based):
-  // 1) per-customer override
   const c=CUSTOMERS.find(x=>x.name===custName);
+  // 1) per-customer override (highest priority)
   if(c&&c.overrides&&c.overrides[code]!==undefined)return c.overrides[code];
-  // 2) customer's tier price
-  if(c&&c.tier&&TIERS[c.tier]&&TIERS[c.tier][code]!==undefined)return TIERS[c.tier][code];
-  // 3) fallback to the customer's chosen fallback (Retail or Wholesale)
+  // 2) use specified tier price
+  if(tierName&&TIERS[tierName]&&TIERS[tierName][code]!==undefined)return TIERS[tierName][code];
+  // 3) fallback: use customer's assigned tier if no tier specified or no price in selected tier
+  if(!tierName||c&&c.tier&&TIERS[c.tier]&&TIERS[c.tier][code]!==undefined)return TIERS[c.tier][code];
+  // 4) fallback to customer's chosen fallback (Retail or Wholesale)
   const fallback=(c&&c.fallback)||'Retail';
   return fallback==='Wholesale'?p.wholesale:p.retail;
+}
+
+function getPriceLabel(code,tierName,custName){
+  const c=CUSTOMERS.find(x=>x.name===custName);
+  // Override takes priority
+  if(c&&c.overrides&&c.overrides[code]!==undefined)return 'Override';
+  // Specified tier price
+  if(tierName&&TIERS[tierName]&&TIERS[tierName][code]!==undefined)return tierName;
+  // Customer's tier
+  if(c&&c.tier&&TIERS[c.tier]&&TIERS[c.tier][code]!==undefined)return c.tier;
+  // Fallback label
+  const fallback=(c&&c.fallback)||'Retail';
+  return fallback==='Wholesale'?'Wholesale':'Retail';
 }
 
 function getPriceLabel(code,type,custName){
@@ -343,6 +355,7 @@ function populateCustDropdown(){
   if(cur)sel.value=cur;
 }
 
+// Populate tier dropdown based on selected customer
 function onCustChange(){
   const name=document.getElementById('cust-select').value;
   const c=getCust(name);
@@ -353,15 +366,77 @@ function onCustChange(){
   if(c.tier)parts.push(`Price tier: ${c.tier}`);
   if(parts.length){bar.style.display='block';txt.textContent=parts.join(' · ');}
   else bar.style.display='none';
+
+  // Populate tier dropdown
+  populateTierDropdown();
+
   refreshLinePrices();
 }
 
-function onTypeChange(){refreshLinePrices();}
+function populateTierDropdown(){
+  const sel=document.getElementById('type-select');
+  if(!sel)return;
+  const tierNames=Object.keys(TIERS);
+  const custName=document.getElementById('cust-select').value;
+  const c=getCust(custName);
+
+  // Build dropdown: Customer's pricing setup (with overrides) + all available tiers
+  let options='<option value="customer" selected>Customer</option>';
+  tierNames.forEach(t=>{
+    const isSelected = t === c.tier ? ' selected' : '';
+    options += `<option value="${t}"${isSelected}>${t}</option>`;
+  });
+  sel.innerHTML = options;
+
+  // Default is always "Customer" which includes their assigned tier and any overrides
+  sel.value='customer';
+}
+
+// Same for edit modal
+function openEditModal(idx){
+  editOrderIdx = idx;
+  const o = savedOrders[idx];
+  editLines = o.lines.map((l,i)=>({id:++editLineIdCounter,...l}));
+
+  // Populate customer dropdown
+  const sel=document.getElementById('edit-cust');
+  sel.innerHTML='';
+  CUSTOMERS.forEach(c=>{const op=document.createElement('option');op.value=c.name;op.textContent=c.name;sel.appendChild(op);});
+  sel.value=o.cust;
+
+  // Populate tier dropdown
+  const tierSel=document.getElementById('edit-type');
+  tierSel.innerHTML='<option value="customer">Use customer\'s tier</option>';
+  Object.keys(TIERS).forEach(t=>{
+    const op=document.createElement('option');
+    op.value=t;
+    op.textContent=t;
+    tierSel.appendChild(op);
+  });
+  // Default to customer's tier
+  const custObj=getCust(o.cust);
+  const effectiveTier = o.type === 'customer' ? custObj.tier : o.type;
+  if(custObj.tier){
+    tierSel.value=custObj.tier;
+  }
+  else if(custObj&&!custObj.tier){
+    tierSel.value='customer';
+  }
+
+  document.getElementById('edit-type').value=effectiveTier;
+  document.getElementById('edit-date').value=o.delDate;
+  document.getElementById('edit-driver').value=o.driver;
+  document.getElementById('edit-modal-title').textContent=`Edit ${o.num} — ${o.cust}`;
+
+  renderEditLines();
+  document.getElementById('edit-modal').style.display='flex';
+}
 
 function refreshLinePrices(){
   const type=document.getElementById('type-select').value;
   const cust=document.getElementById('cust-select').value;
-  lines.forEach(l=>{if(l.productCode)l.price=getPrice(l.productCode,type,cust);});
+  const effectiveTier = type === 'customer' ? getCust(cust).tier : type;
+  lines.forEach(l=>{if(l.productCode)l.price=getPrice(l.productCode,effectiveTier,cust);});
   renderLines();
 }
 
@@ -499,7 +574,7 @@ function clearOrder(){
   lines=[];lineIdCounter=0;
   document.getElementById('cust-select').value='';
   document.getElementById('driver-select').value='';
-  document.getElementById('type-select').value='Custom';
+  document.getElementById('type-select').value='customer';
   document.getElementById('cust-info-bar').style.display='none';
   setDefaultDate();renderLines();
 }
@@ -514,6 +589,7 @@ async function saveOrder(){
   if(!filled.length){alert('Add at least one product line.');return;}
   let total=0,items=0;filled.forEach(l=>{total+=l.qty*l.price;items+=l.qty;});
   const custObj=getCust(cust);
+  const effectiveTier = type === 'customer' ? custObj.tier : type;
   const newOrder={
     num:'ORD-'+(1000+savedOrders.length+1),cust,type,driver,delDate,
     lines:filled.map(l=>({...l})),total,items,
@@ -916,7 +992,8 @@ function updateEditTotal(){
 function getEditPrice(code){
   const type=document.getElementById('edit-type').value;
   const cust=document.getElementById('edit-cust').value;
-  return getPrice(code,type,cust);
+  const effectiveTier = type === 'customer' ? getCust(cust).tier : type;
+  return getPrice(code,effectiveTier,cust);
 }
 
 function onEditProductInput(id,val){
@@ -997,9 +1074,10 @@ async function saveEditOrder(){
   let total=0,items=0;
   filled.forEach(l=>{total+=l.qty*l.price;items+=l.qty;});
   const custObj=getCust(cust);
+  const effectiveTier = type === 'customer' ? custObj.tier : type;
   savedOrders[editOrderIdx]={
     ...savedOrders[editOrderIdx],
-    cust,type,driver,delDate,
+    cust,type,driver,delDate,effectiveTier,
     lines:filled.map(l=>({...l})),
     total,items,
     custNotes:custObj.notes,custTier:custObj.tier||''
@@ -1297,7 +1375,30 @@ function showMsg(id,msg,type){
 }
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
-function setDefaultDate(){const t=new Date();t.setDate(t.getDate()+1);document.getElementById('del-date').value=`${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`;}
+function setDefaultDate(){
+  const t=new Date();
+  const dayOfWeek=t.getDay(); // 0=Sun, 1=Mon, ..., 4=Thu, 5=Fri, 6=Sat
+  let targetDate=t;
+
+  // If next day is Friday, default to Monday instead
+  if(dayOfWeek===5){
+    targetDate.setDate(targetDate.getDate()+3); // Friday + 3 days = Monday
+  }
+  // If next day is Saturday, default to Monday instead
+  else if(dayOfWeek===6){
+    targetDate.setDate(targetDate.getDate()+1); // Saturday + 1 day = Monday
+  }
+  // If next day is Sunday, default to Monday instead
+  else if(dayOfWeek===0){
+    targetDate.setDate(targetDate.getDate()+1); // Sunday + 1 day = Monday
+  }
+  // Otherwise next day is fine (Mon-Thu)
+
+  const year=targetDate.getFullYear();
+  const month=String(targetDate.getMonth()+1).padStart(2,'0');
+  const day=String(targetDate.getDate()).padStart(2,'0');
+  document.getElementById('del-date').value=`${year}-${month}-${day}`;
+}
 
 function applyTheme(theme){
   document.documentElement.setAttribute('data-theme', theme);

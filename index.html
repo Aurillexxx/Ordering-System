@@ -41,19 +41,17 @@
         <div class="field"><label>Customer</label>
           <select id="cust-select" onchange="onCustChange()"><option value="">— Select customer —</option></select>
         </div>
-        <div class="field"><label>Order type</label>
+        <div class="field"><label>Pricing Tier</label>
           <select id="type-select" onchange="onTypeChange()">
-            <option value="Retail">Retail</option>
-            <option value="Wholesale">Wholesale</option>
-            <option value="Custom" selected>Custom (tier-based)</option>
+            <option value="">— Customer's tier —</option>
           </select>
         </div>
         <div class="field"><label>Delivery date</label><input type="date" id="del-date"></div>
         <div class="field"><label>Driver / route</label>
           <select id="driver-select">
             <option value="">— Assign route —</option>
-            <option>Route 1 – North</option><option>Route 2 – South</option><option>Route 3 – East</option>
-            <option>Route 4 – West</option><option>Route 5 – City</option><option>Route 6 – Collect</option>
+            <option>Route 1 – Brian</option><option>Route 2 – Ian</option><option>Route 3 – John</option>
+            <option>Route 4 – Nick</option><option>Route 5 – Steve</option><option>Route 6 – Misc</option>
           </select>
         </div>
       </div>
@@ -136,12 +134,6 @@
         </div>
         <button class="btn btn-primary" onclick="addTier()"><i class="ti ti-plus"></i> Add tier</button>
       </div>
-      <div class="info-box">
-        When order type is set to <strong>Custom (tier-based)</strong>, pricing works like this:
-        <strong>1)</strong> Check for a per-product override on this customer → use it if found.
-        <strong>2)</strong> Otherwise use the customer's assigned tier price for this product.
-        <strong>3)</strong> If no tier price, fall back to Wholesale price.
-      </div>
       <div class="tier-grid" id="tier-grid"></div>
     </div>
   </div>
@@ -155,11 +147,9 @@
     <div class="modal-body">
       <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1.2fr;gap:8px;margin-bottom:14px">
         <div class="field"><label>Customer</label><select id="edit-cust"></select></div>
-        <div class="field"><label>Order type</label>
+        <div class="field"><label>Pricing Tier</label>
           <select id="edit-type">
-            <option value="Retail">Retail</option>
-            <option value="Wholesale">Wholesale</option>
-            <option value="Custom" selected>Custom (tier-based)</option>
+            <option value="customer">— Customer's tier —</option>
           </select>
         </div>
         <div class="field"><label>Delivery date</label><input type="date" id="edit-date"></div>
