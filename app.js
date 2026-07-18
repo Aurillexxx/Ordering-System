@@ -127,12 +127,12 @@ async function loadData(){
 
     // Orders + lines
     savedOrders = orderRows.map(o=>{
-      const oLines = orderLineRows.filter(l=>l.OrderId===o.id).map(l=>({
+      const oLines = orderLineRows.filter(l=>Number(l.OrderId)===Number(o.id)).map(l=>({
         productCode:l.ProductCode, productName:l.ProductName||l.ProductCode,
         qty:Number(l.Qty), price:Number(l.Price)
       }));
       return {
-        dbId:o.id, cust:o.AccountNumber, type:o.OrderType||'Custom',
+        dbId:Number(o.id), cust:o.AccountNumber, type:o.OrderType||'Custom',
         driver:o.Route, delDate:(o.DeliveryDate||'').slice(0,10), total:Number(o.Total),
         items:oLines.reduce((a,l)=>a+l.qty,0),
         deliveryNotes:o.DeliveryNotes||'', lines:oLines
@@ -205,7 +205,7 @@ async function saveOrderToDb(order){
     const dbId = rows[0].id;
     order.dbId = dbId;
     const lineRows = order.lines.map(l=>({
-      OrderId:dbId, ProductCode:l.productCode, ProductName:l.productName,
+      OrderId:dbId, ProductCode:l.productCode,
       Qty:l.qty, Price:l.price
     }));
     if(lineRows.length) await sbInsert('order_lines', lineRows);
@@ -223,7 +223,7 @@ async function updateOrderInDb(order){
     });
     await sbDelete('order_lines', `?OrderId=eq.${order.dbId}`);
     const lineRows = order.lines.map(l=>({
-      OrderId:order.dbId, ProductCode:l.productCode, ProductName:l.productName,
+      OrderId:order.dbId, ProductCode:l.productCode,
       Qty:l.qty, Price:l.price
     }));
     if(lineRows.length) await sbInsert('order_lines', lineRows);
@@ -1260,7 +1260,7 @@ function showMsg(id,msg,type){
 }
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
-function setDefaultDate(){const t=new Date();t.setDate(t.getDate()+1);document.getElementById('del-date').value=`${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`;}
+function setDefaultDate(){const t=new Date();const day=t.getDay();if(day===5)t.setDate(t.getDate()+3);else if(day===6)t.setDate(t.getDate()+2);else t.setDate(t.getDate()+1);document.getElementById('del-date').value=`${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`;}
 
 function applyTheme(theme){
   document.documentElement.setAttribute('data-theme', theme);

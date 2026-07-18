@@ -131,24 +131,6 @@
     </div>
   </div>
 
-  <!-- PRICE TIERS TAB -->
-  <div id="tab-tiers" style="display:none">
-    <div class="section">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;gap:10px;flex-wrap:wrap">
-        <div><div class="section-title" style="margin-bottom:2px">Price tiers</div>
-          <div style="font-size:12px;color:var(--text2)">Define named price bands (like Sage price lists). Assign customers to a tier in the Customers tab.</div>
-        </div>
-        <button class="btn btn-primary" onclick="addTier()"><i class="ti ti-plus"></i> Add tier</button>
-      </div>
-      <div class="info-box">
-        When order type is set to <strong>Custom (tier-based)</strong>, pricing works like this:
-        <strong>1)</strong> Check for a per-product override on this customer → use it if found.
-        <strong>2)</strong> Otherwise use the customer's assigned tier price for this product.
-        <strong>3)</strong> If no tier price, fall back to Wholesale price.
-      </div>
-      <div class="tier-grid" id="tier-grid"></div>
-    </div>
-  </div>
 <!-- EDIT ORDER MODAL -->
 <div id="edit-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeEditModal()">
   <div class="modal">
