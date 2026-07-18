@@ -38,7 +38,12 @@
       <div class="section-title">Order details</div>
       <div class="header-grid">
         <div class="field"><label>Customer</label>
-          <select id="cust-select" onchange="onCustChange()"><option value="">— Select customer —</option></select>
+          <div class="product-wrap" id="cust-wrap">
+            <input class="product-input" id="cust-input" placeholder="Search customer…" autocomplete="off"
+              oninput="onCustInput(this.value)" onkeydown="onCustKey(event)"
+              onblur="onCustBlur()" onfocus="onCustFocus(this.value)"/>
+            <input type="hidden" id="cust-select" value="">
+          </div>
         </div>
         <div class="field"><label>Order type</label>
           <select id="type-select" onchange="onTypeChange()">
@@ -51,8 +56,8 @@
         <div class="field"><label>Driver / route</label>
           <select id="driver-select">
             <option value="">— Assign route —</option>
-            <option>Route 1 – North</option><option>Route 2 – South</option><option>Route 3 – East</option>
-            <option>Route 4 – West</option><option>Route 5 – City</option><option>Route 6 – Collect</option>
+            <option>Brian</option><option>Chris</option><option>Ian</option><option>John</option>
+            <option>Mike</option><option>Misc</option><option>Nick</option><option>Steve</option>
           </select>
         </div>
       </div>
@@ -153,7 +158,14 @@
     </div>
     <div class="modal-body">
       <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1.2fr;gap:8px;margin-bottom:14px">
-        <div class="field"><label>Customer</label><select id="edit-cust"></select></div>
+        <div class="field"><label>Customer</label>
+          <div class="product-wrap">
+            <input class="product-input" id="edit-cust-input" placeholder="Search customer…" autocomplete="off"
+              oninput="onEditCustInput(this.value)" onkeydown="onEditCustKey(event)"
+              onblur="onEditCustBlur()" onfocus="onEditCustFocus(this.value)"/>
+            <input type="hidden" id="edit-cust" value="">
+          </div>
+        </div>
         <div class="field"><label>Order type</label>
           <select id="edit-type">
             <option value="Retail">Retail</option>
@@ -165,8 +177,8 @@
         <div class="field"><label>Driver / route</label>
           <select id="edit-driver">
             <option value="">— Assign route —</option>
-            <option>Route 1 – North</option><option>Route 2 – South</option><option>Route 3 – East</option>
-            <option>Route 4 – West</option><option>Route 5 – City</option><option>Route 6 – Collect</option>
+            <option>Brian</option><option>Chris</option><option>Ian</option><option>John</option>
+            <option>Mike</option><option>Misc</option><option>Nick</option><option>Steve</option>
           </select>
         </div>
       </div>

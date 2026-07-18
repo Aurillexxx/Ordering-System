@@ -34,7 +34,7 @@ const DEFAULT_TIERS={
   "Tier B":{"DR001":14.00,"DR003":6.00},
   "Retail":{},
 };
-const ROUTES=["Route 1 – North","Route 2 – South","Route 3 – East","Route 4 – West","Route 5 – City","Route 6 – Collect"];
+const ROUTES=["Brian","Chris","Ian","John","Mike","Misc","Nick","Steve"];
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
 let PRODUCTS=[],CUSTOMERS=[],TIERS={};
@@ -133,7 +133,7 @@ async function loadData(){
       }));
       return {
         dbId:o.id, cust:o.AccountNumber, type:o.OrderType||'Custom',
-        driver:o.Route, delDate:o.DeliveryDate, total:Number(o.Total),
+        driver:o.Route, delDate:(o.DeliveryDate||'').slice(0,10), total:Number(o.Total),
         items:oLines.reduce((a,l)=>a+l.qty,0),
         deliveryNotes:o.DeliveryNotes||'', lines:oLines
       };
@@ -329,11 +329,58 @@ function switchTab(t){
 
 // ── CUSTOMER DROPDOWN ─────────────────────────────────────────────────────────
 function populateCustDropdown(){
-  const sel=document.getElementById('cust-select');
-  const cur=sel.value;
-  sel.innerHTML='<option value="">— Select customer —</option>';
-  CUSTOMERS.forEach(c=>{const o=document.createElement('option');o.value=c.name;o.textContent=c.name;sel.appendChild(o);});
-  if(cur)sel.value=cur;
+  // No longer a <select> — customer search is now type-to-search
+}
+
+// ── CUSTOMER SEARCH (order entry) ─────────────────────────────────────────────
+let custDD=null,custDDHighlight=-1;
+
+function onCustInput(val){
+  closeCustDD();
+  if(!val.trim())return;
+  const m=CUSTOMERS.filter(c=>
+    c.name.toLowerCase().includes(val.toLowerCase())||
+    c.accountNumber.toLowerCase().includes(val.toLowerCase())
+  ).slice(0,12);
+  if(m.length)showCustDD(m,val);
+}
+function onCustFocus(val){if(val&&val.trim())onCustInput(val);}
+function onCustBlur(){setTimeout(()=>closeCustDD(),150);}
+
+function showCustDD(matches,query){
+  closeCustDD();custDDHighlight=-1;
+  const inp=document.getElementById('cust-input');if(!inp)return;
+  const rect=inp.getBoundingClientRect();
+  const dd=document.createElement('div');dd.className='dropdown';dd.id='cust-dd';
+  dd.style.cssText=`top:${rect.bottom+window.scrollY+2}px;left:${rect.left+window.scrollX}px;width:${Math.max(rect.width,300)}px`;
+  const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  dd.innerHTML=matches.map((c,i)=>{
+    const hl=c.name.replace(new RegExp(`(${esc(query)})`,'gi'),'<strong>$1</strong>');
+    const tierBadge=c.tier?`<span style="font-size:10px;color:var(--text3);margin-left:4px">${c.tier}</span>`:'';
+    return `<div class="dd-item" onmousedown="selectCust('${c.name.replace(/'/g,"\\'")}')" onmouseover="custDDHighlight=${i};highlightCustDD()">
+      <div><div class="dd-name">${hl}${tierBadge}</div><div class="dd-meta">${c.accountNumber}${c.defaultRoute?' · '+c.defaultRoute:''}</div></div>
+    </div>`;
+  }).join('');
+  document.body.appendChild(dd);
+  custDD={dd,matches};
+}
+function highlightCustDD(){if(!custDD)return;custDD.dd.querySelectorAll('.dd-item').forEach((el,i)=>{el.classList.toggle('highlighted',i===custDDHighlight);if(i===custDDHighlight)el.scrollIntoView({block:'nearest'});});}
+function closeCustDD(){if(custDD?.dd)custDD.dd.remove();custDD=null;custDDHighlight=-1;}
+
+function selectCust(name){
+  closeCustDD();
+  document.getElementById('cust-input').value=name;
+  document.getElementById('cust-input').classList.add('filled');
+  document.getElementById('cust-select').value=name;
+  onCustChange();
+}
+
+function onCustKey(e){
+  if(!custDD){return;}
+  if(e.key==='ArrowDown'){e.preventDefault();custDDHighlight=Math.min(custDDHighlight+1,custDD.matches.length-1);highlightCustDD();}
+  else if(e.key==='ArrowUp'){e.preventDefault();custDDHighlight=Math.max(custDDHighlight-1,0);highlightCustDD();}
+  else if(e.key==='Enter'||e.key==='Tab'){e.preventDefault();const idx=custDDHighlight>=0?custDDHighlight:0;if(custDD.matches[idx])selectCust(custDD.matches[idx].name);}
+  else if(e.key==='Escape')closeCustDD();
 }
 
 function onCustChange(){
@@ -351,6 +398,53 @@ function onCustChange(){
     if(!driverSel.value) driverSel.value=c.defaultRoute;
   }
   refreshLinePrices();
+}
+
+// ── CUSTOMER SEARCH (edit modal) ──────────────────────────────────────────────
+let editCustDD=null,editCustDDHighlight=-1;
+
+function onEditCustInput(val){
+  closeEditCustDD();
+  if(!val.trim())return;
+  const m=CUSTOMERS.filter(c=>
+    c.name.toLowerCase().includes(val.toLowerCase())||
+    c.accountNumber.toLowerCase().includes(val.toLowerCase())
+  ).slice(0,12);
+  if(m.length)showEditCustDD(m,val);
+}
+function onEditCustFocus(val){if(val&&val.trim())onEditCustInput(val);}
+function onEditCustBlur(){setTimeout(()=>closeEditCustDD(),150);}
+
+function showEditCustDD(matches,query){
+  closeEditCustDD();editCustDDHighlight=-1;
+  const inp=document.getElementById('edit-cust-input');if(!inp)return;
+  const rect=inp.getBoundingClientRect();
+  const dd=document.createElement('div');dd.className='dropdown';dd.id='edit-cust-dd';
+  dd.style.cssText=`top:${rect.bottom+window.scrollY+2}px;left:${rect.left+window.scrollX}px;width:${Math.max(rect.width,300)}px`;
+  const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  dd.innerHTML=matches.map((c,i)=>{
+    const hl=c.name.replace(new RegExp(`(${esc(query)})`,'gi'),'<strong>$1</strong>');
+    return `<div class="dd-item" onmousedown="selectEditCust('${c.name.replace(/'/g,"\\'")}')" onmouseover="editCustDDHighlight=${i};highlightEditCustDD()">
+      <div><div class="dd-name">${hl}</div><div class="dd-meta">${c.accountNumber}</div></div>
+    </div>`;
+  }).join('');
+  document.body.appendChild(dd);
+  editCustDD={dd,matches};
+}
+function highlightEditCustDD(){if(!editCustDD)return;editCustDD.dd.querySelectorAll('.dd-item').forEach((el,i)=>{el.classList.toggle('highlighted',i===editCustDDHighlight);if(i===editCustDDHighlight)el.scrollIntoView({block:'nearest'});});}
+function closeEditCustDD(){if(editCustDD?.dd)editCustDD.dd.remove();editCustDD=null;editCustDDHighlight=-1;}
+function selectEditCust(name){
+  closeEditCustDD();
+  document.getElementById('edit-cust-input').value=name;
+  document.getElementById('edit-cust-input').classList.add('filled');
+  document.getElementById('edit-cust').value=name;
+}
+function onEditCustKey(e){
+  if(!editCustDD)return;
+  if(e.key==='ArrowDown'){e.preventDefault();editCustDDHighlight=Math.min(editCustDDHighlight+1,editCustDD.matches.length-1);highlightEditCustDD();}
+  else if(e.key==='ArrowUp'){e.preventDefault();editCustDDHighlight=Math.max(editCustDDHighlight-1,0);highlightEditCustDD();}
+  else if(e.key==='Enter'||e.key==='Tab'){e.preventDefault();const idx=editCustDDHighlight>=0?editCustDDHighlight:0;if(editCustDD.matches[idx])selectEditCust(editCustDD.matches[idx].name);}
+  else if(e.key==='Escape')closeEditCustDD();
 }
 
 function onTypeChange(){refreshLinePrices();}
@@ -404,7 +498,6 @@ function onProductInput(id,val){
   const m=PRODUCTS.filter(p=>
     p.name.toLowerCase().includes(val.toLowerCase())||
     p.code.toLowerCase().includes(val.toLowerCase())||
-    p.cat.toLowerCase().includes(val.toLowerCase())||
     (p.short&&p.short.toLowerCase()===val.toLowerCase())
   ).slice(0,10);
   if(m.length)showDropdown(id,m,val);
@@ -427,12 +520,12 @@ function showDropdown(id,matches,query){
     const shortBadge=p.short?`<span class="dd-short">${p.short}</span>`:'';
     const lblBadge=`<span style="font-size:10px;color:var(--text3);margin-left:4px">${lbl}</span>`;
     return `<div class="dd-item" onmousedown="selectProduct(${id},'${p.code}',${JSON.stringify(p.name)})" onmouseover="highlightDD(${i})">
-      <div><div class="dd-name">${hl}${shortBadge}${lblBadge}</div><div class="dd-meta">${p.code} · ${p.cat} · per ${p.unit}</div></div>
+      <div><div class="dd-name">${hl}${shortBadge}${lblBadge}</div><div class="dd-meta">${p.code}</div></div>
       <div class="dd-price">£${pr.toFixed(2)}</div></div>`;
   }).join('');
   document.body.appendChild(dd);activeDD={id,dd,matches};
 }
-function highlightDD(idx){ddHighlight=idx;if(!activeDD)return;activeDD.dd.querySelectorAll('.dd-item').forEach((el,i)=>el.classList.toggle('highlighted',i===idx));}
+function highlightDD(idx){ddHighlight=idx;if(!activeDD)return;activeDD.dd.querySelectorAll('.dd-item').forEach((el,i)=>{el.classList.toggle('highlighted',i===idx);if(i===idx)el.scrollIntoView({block:'nearest'});});}
 function closeDropdown(){if(activeDD?.dd)activeDD.dd.remove();activeDD=null;ddHighlight=-1;}
 
 function selectProduct(lineId,code,name){
@@ -494,6 +587,8 @@ function updateLineCount(){const el=document.getElementById('line-count');if(el)
 
 function clearOrder(){
   lines=[];lineIdCounter=0;
+  document.getElementById('cust-input').value='';
+  document.getElementById('cust-input').classList.remove('filled');
   document.getElementById('cust-select').value='';
   document.getElementById('driver-select').value='';
   document.getElementById('type-select').value='Custom';
@@ -561,7 +656,7 @@ function renderRouteTab(){
   if(!dates.length){container.innerHTML='<div class="no-items" style="padding:48px">No active orders. Mark routes as delivered to remove them.</div>';return;}
   if(!activeRouteDay||!dates.includes(activeRouteDay))activeRouteDay=dates[0];
   const dayOrders=savedOrders.filter(o=>o.delDate===activeRouteDay);
-  const usedRoutes=ROUTES.filter(r=>dayOrders.some(o=>o.driver===r));
+  const usedRoutes=[...new Set(dayOrders.map(o=>o.driver).filter(Boolean))];
   if(!activeRoute||!usedRoutes.includes(activeRoute))activeRoute=usedRoutes[0]||null;
   const datePills=dates.map(d=>`<button class="pill${d===activeRouteDay?' active':''}" onclick="selectDay('${d}')">${fmt(d)}<span class="cnt">${savedOrders.filter(o=>o.delDate===d).length}</span></button>`).join('');
   const routePills=usedRoutes.map(r=>{
@@ -654,7 +749,7 @@ function confirmDelivered(){
   if(!deliveredRoutes[activeRouteDay])deliveredRoutes[activeRouteDay]={};
   deliveredRoutes[activeRouteDay][activeRoute]=true;
   const dayOrders=savedOrders.filter(o=>o.delDate===activeRouteDay);
-  const usedRoutes=ROUTES.filter(r=>dayOrders.some(o=>o.driver===r));
+  const usedRoutes=[...new Set(dayOrders.map(o=>o.driver).filter(Boolean))];
   if(usedRoutes.every(r=>deliveredRoutes[activeRouteDay]?.[r])){
     const toRemove=savedOrders.filter(o=>o.delDate===activeRouteDay);
     savedOrders=savedOrders.filter(o=>o.delDate!==activeRouteDay);
@@ -852,16 +947,16 @@ function openEditModal(idx){
   const o = savedOrders[idx];
   editLines = o.lines.map((l,i)=>({id:++editLineIdCounter,...l}));
 
-  // Populate customer dropdown
-  const sel=document.getElementById('edit-cust');
-  sel.innerHTML='';
-  CUSTOMERS.forEach(c=>{const op=document.createElement('option');op.value=c.name;op.textContent=c.name;sel.appendChild(op);});
-  sel.value=o.custName||o.cust;
+  // Set customer search input
+  const custName = o.custName||o.cust;
+  document.getElementById('edit-cust-input').value=custName;
+  document.getElementById('edit-cust-input').classList.add('filled');
+  document.getElementById('edit-cust').value=custName;
 
   document.getElementById('edit-type').value=o.type;
   document.getElementById('edit-date').value=o.delDate;
   document.getElementById('edit-driver').value=o.driver;
-  document.getElementById('edit-modal-title').textContent=`Edit order — ${o.custName||o.cust}`;
+  document.getElementById('edit-modal-title').textContent=`Edit order — ${custName}`;
 
   renderEditLines();
   document.getElementById('edit-modal').style.display='flex';
@@ -870,6 +965,7 @@ function openEditModal(idx){
 function closeEditModal(){
   document.getElementById('edit-modal').style.display='none';
   closeEditDropdown();
+  closeEditCustDD();
   editOrderIdx=null;editLines=[];
 }
 
@@ -938,13 +1034,13 @@ function showEditDropdown(id,matches,query){
     const hl=p.name.replace(new RegExp(`(${esc(query)})`,'gi'),'<strong>$1</strong>');
     const sb=p.short?`<span class="dd-short">${p.short}</span>`:'';
     return `<div class="dd-item" onmousedown="selectEditProduct(${id},'${p.code}',${JSON.stringify(p.name)})" onmouseover="highlightEditDD(${i})">
-      <div><div class="dd-name">${hl}${sb}</div><div class="dd-meta">${p.code} · ${p.cat}</div></div>
+      <div><div class="dd-name">${hl}${sb}</div><div class="dd-meta">${p.code}</div></div>
       <div class="dd-price">£${pr.toFixed(2)}</div></div>`;
   }).join('');
   document.body.appendChild(dd);
   editActiveDD={id,dd,matches};
 }
-function highlightEditDD(idx){editDDHighlight=idx;if(!editActiveDD)return;editActiveDD.dd.querySelectorAll('.dd-item').forEach((el,i)=>el.classList.toggle('highlighted',i===idx));}
+function highlightEditDD(idx){editDDHighlight=idx;if(!editActiveDD)return;editActiveDD.dd.querySelectorAll('.dd-item').forEach((el,i)=>{el.classList.toggle('highlighted',i===idx);if(i===idx)el.scrollIntoView({block:'nearest'});});}
 function closeEditDropdown(){if(editActiveDD?.dd)editActiveDD.dd.remove();editActiveDD=null;editDDHighlight=-1;}
 function selectEditProduct(lineId,code,name){
   const pr=getEditPrice(code);
@@ -1104,12 +1200,14 @@ function renderCustomerManager(){
         <div class="cm-field"><label>Default route</label>
           <select onchange="updateCustRoute(${ci},this.value)">
             <option value="">— None —</option>
-            <option value="Route 1 – North"${c.defaultRoute==='Route 1 – North'?' selected':''}>Route 1 – North</option>
-            <option value="Route 2 – South"${c.defaultRoute==='Route 2 – South'?' selected':''}>Route 2 – South</option>
-            <option value="Route 3 – East"${c.defaultRoute==='Route 3 – East'?' selected':''}>Route 3 – East</option>
-            <option value="Route 4 – West"${c.defaultRoute==='Route 4 – West'?' selected':''}>Route 4 – West</option>
-            <option value="Route 5 – City"${c.defaultRoute==='Route 5 – City'?' selected':''}>Route 5 – City</option>
-            <option value="Route 6 – Collect"${c.defaultRoute==='Route 6 – Collect'?' selected':''}>Route 6 – Collect</option>
+            <option value="Brian"${c.defaultRoute==='Brian'?' selected':''}>Brian</option>
+            <option value="Chris"${c.defaultRoute==='Chris'?' selected':''}>Chris</option>
+            <option value="Ian"${c.defaultRoute==='Ian'?' selected':''}>Ian</option>
+            <option value="John"${c.defaultRoute==='John'?' selected':''}>John</option>
+            <option value="Mike"${c.defaultRoute==='Mike'?' selected':''}>Mike</option>
+            <option value="Misc"${c.defaultRoute==='Misc'?' selected':''}>Misc</option>
+            <option value="Nick"${c.defaultRoute==='Nick'?' selected':''}>Nick</option>
+            <option value="Steve"${c.defaultRoute==='Steve'?' selected':''}>Steve</option>
           </select>
         </div>
       </div>
