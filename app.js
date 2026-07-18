@@ -20,24 +20,10 @@ const DEFAULT_PRODUCTS=[
   {code:"DY004",name:"Wooden Cutlery Set x100",cat:"Dry Goods",unit:"Pack",retail:6.00,wholesale:4.80,short:"WC"},
   {code:"DY005",name:"Paper Straws x250",cat:"Dry Goods",unit:"Pack",retail:3.50,wholesale:2.80,short:"PS"},
 ];
-const DEFAULT_CUSTOMERS=[
-  {name:"Joe's Diner",notes:"Takes greaseproof cut to 12\" width.",tier:"Tier A",overrides:{"DR001":13.00,"PK001":6.50}},
-  {name:"Smith's Café",notes:"",tier:"Tier B",overrides:{"DR003":5.50}},
-  {name:"City Takeaway",notes:"",tier:"Tier A",overrides:{"PK003":9.00}},
-  {name:"Quick Bites",notes:"",tier:"Tier B",overrides:{}},
-  {name:"The Corner Shop",notes:"",tier:"Retail",overrides:{}},
-  {name:"Sunrise Foods",notes:"Greaseproof cut to 10\" — invoice at standard GP rate.",tier:"Tier A",overrides:{}},
-];
-// Tiers: name → {productCode: price}
-const DEFAULT_TIERS={
-  "Tier A":{"DR001":13.50,"DR002":13.00,"DR003":5.80,"PK001":6.80,"PK002":8.50},
-  "Tier B":{"DR001":14.00,"DR003":6.00},
-  "Retail":{},
-};
 const ROUTES=["Brian","Chris","Ian","John","Mike","Misc","Nick","Steve"];
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
-let PRODUCTS=[],CUSTOMERS=[],TIERS={};
+let PRODUCTS=[],CUSTOMERS=[];
 let lines=[],savedOrders=[],lineIdCounter=0;
 let activeDD=null,ddHighlight=-1;
 let activeRouteDay=null,activeRoute=null,pickedState={},deliveredRoutes={};
@@ -122,17 +108,20 @@ async function loadData(){
     // Customers
     CUSTOMERS = custRows.map(c=>({
       accountNumber:c.AccountNumber, name:c.AccountName,
-      tier:c.PriceTier||'', defaultRoute:c.Route||''
+      tier:c.PriceTier||'', defaultRoute:c.Route||'', notes:c.Notes||''
     }));
 
     // Orders + lines
     savedOrders = orderRows.map(o=>{
-      const oLines = orderLineRows.filter(l=>Number(l.OrderId)===Number(o.id)).map(l=>({
-        productCode:l.ProductCode, productName:l.ProductName||l.ProductCode,
-        qty:Number(l.Qty), price:Number(l.Price)
-      }));
+      const oLines = orderLineRows.filter(l=>Number(l.OrderId)===Number(o.id)).map(l=>{
+        const prod = PRODUCTS.find(p=>p.code===l.ProductCode);
+        return {
+          productCode:l.ProductCode, productName:prod?prod.name:l.ProductCode,
+          qty:Number(l.Qty), price:Number(l.Price)
+        };
+      });
       return {
-        dbId:Number(o.id), cust:o.AccountNumber, type:o.OrderType||'Custom',
+        dbId:Number(o.id), cust:o.AccountNumber, type:o.OrderType||'retail_price',
         driver:o.Route, delDate:(o.DeliveryDate||'').slice(0,10), total:Number(o.Total),
         items:oLines.reduce((a,l)=>a+l.qty,0),
         deliveryNotes:o.DeliveryNotes||'', lines:oLines
@@ -182,7 +171,7 @@ async function saveCustomerToDb(c){
   try{
     await sbUpsert('Customers', [{
       AccountNumber:c.accountNumber, AccountName:c.name,
-      PriceTier:c.tier||null, Route:c.defaultRoute||null
+      PriceTier:c.tier||null, Route:c.defaultRoute||null, Notes:c.notes||null
     }]);
     showSaveStatus('Saved');
   }catch(e){console.error(e);showSaveStatus('Save failed',true);}
@@ -245,7 +234,7 @@ function showSaveStatus(msg,err=false){
 }
 
 function exportBackup(){
-  const data={products:PRODUCTS,customers:CUSTOMERS,tiers:TIERS,savedOrders,exportedAt:new Date().toISOString()};
+  const data={products:PRODUCTS,customers:CUSTOMERS,savedOrders,exportedAt:new Date().toISOString()};
   const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);
   a.download=`warehouse_backup_${new Date().toISOString().slice(0,10)}.json`;a.click();
@@ -258,23 +247,19 @@ function importBackup(e){
     try{
       const d=JSON.parse(ev.target.result);
       if(!d.products||!d.customers)throw new Error('Invalid backup file');
-      if(!confirm(`Restore backup from ${d.exportedAt?d.exportedAt.slice(0,10):'unknown date'}?\n\nThis will overwrite the live database for everyone. Continue?`))return;
+      if(!confirm(`Restore backup from ${d.exportedAt?d.exportedAt.slice(0,10):'unknown date'}?\n\nThis will overwrite products and customers in the live database for everyone. Continue?`))return;
       showSaveStatus('Restoring…');
-      // Push tiers first
-      for(const tName of Object.keys(d.tiers||{})){
-        if(!tierIdByName[tName]) await createTierInDb(tName);
+      // Push products (names/shorthands) and their full price rows
+      for(const p of d.products){
+        await sbUpsert('Products', [{code:p.code, name:p.name, shorthand:p.short||''}]);
+        if(p.prices&&Object.keys(p.prices).length){
+          await sbUpsert('Prices', [{...p.prices, code:p.code}]);
+        }
       }
-      for(const [tName,prices] of Object.entries(d.tiers||{})){
-        for(const [code,price] of Object.entries(prices)) await saveTierPriceToDb(tName,code,price);
-      }
-      // Push products
-      for(const p of d.products) await saveProductToDb(p);
       // Push customers
-      for(const c of d.customers){
-        await saveCustomerToDb(c);
-        for(const [code,price] of Object.entries(c.overrides||{})) await saveOverrideToDb(custIdByName[c.name],code,price);
-      }
+      for(const c of d.customers) await saveCustomerToDb(c);
       await loadData();
+      populateTypeDropdown();
       populateCustDropdown();updateBadges();
       alert('Backup restored successfully.');
     } catch(err){console.error(err);alert('Could not restore backup: '+err.message);}
@@ -292,30 +277,31 @@ function scheduleSave(){
 }
 
 // ── PRICING LOGIC ─────────────────────────────────────────────────────────────
+// Order type is now a column name in the Prices table (retail_price,
+// wholesale_price, or any tier column like "Harlequin"). Price lookup is
+// simply that column for the product, falling back to retail_price.
 function getPrice(code,type,custName){
   const p=PRODUCTS.find(x=>x.code===code);if(!p)return 0;
-  if(type==='Retail')return p.retail;
-  if(type==='Wholesale')return p.wholesale;
-  // Custom (tier-based):
-  // Look up the customer's tier, then find that column in the Prices row
-  const c=CUSTOMERS.find(x=>x.name===custName);
-  if(c&&c.tier&&p.prices&&p.prices[c.tier]!==undefined&&p.prices[c.tier]!==null){
-    return Number(p.prices[c.tier]);
+  if(type&&p.prices&&p.prices[type]!==undefined&&p.prices[type]!==null){
+    return Number(p.prices[type]);
   }
-  // Fallback to retail
-  return p.retail;
+  return Number(p.prices?.retail_price)||p.retail||0;
+}
+
+function typeLabel(type){
+  if(type==='retail_price')return 'Retail';
+  if(type==='wholesale_price')return 'Wholesale';
+  return type||'Retail';
 }
 
 function getPriceLabel(code,type,custName){
-  if(type==='Retail')return 'Retail';
-  if(type==='Wholesale')return 'Wholesale';
-  const c=CUSTOMERS.find(x=>x.name===custName);
-  if(c&&c.tier&&PRODUCTS.find(x=>x.code===code)?.prices?.[c.tier]!==undefined&&PRODUCTS.find(x=>x.code===code)?.prices?.[c.tier]!==null) return c.tier;
+  const p=PRODUCTS.find(x=>x.code===code);
+  if(type&&p&&p.prices&&p.prices[type]!==undefined&&p.prices[type]!==null)return typeLabel(type);
   return 'Retail';
 }
 
 function getShort(code){const p=PRODUCTS.find(x=>x.code===code);return p?.short||code;}
-function getCust(name){return CUSTOMERS.find(c=>c.name===name)||{name,accountNumber:'',tier:'',defaultRoute:''};}
+function getCust(name){return CUSTOMERS.find(c=>c.name===name)||{name,accountNumber:'',tier:'',defaultRoute:'',notes:'',overrides:{}};}
 
 // ── TAB SWITCHING ─────────────────────────────────────────────────────────────
 function switchTab(t){
@@ -383,19 +369,36 @@ function onCustKey(e){
   else if(e.key==='Escape')closeCustDD();
 }
 
+function populateTypeDropdown(){
+  const base='<option value="retail_price">Retail</option><option value="wholesale_price">Wholesale</option>';
+  const tierOpts=PRICE_TIERS.filter(t=>t!=='retail_price'&&t!=='wholesale_price').map(t=>`<option value="${t}">${t}</option>`).join('');
+  const sel=document.getElementById('type-select');
+  const editSel=document.getElementById('edit-type');
+  if(sel){sel.innerHTML=base+tierOpts;sel.value='retail_price';}
+  if(editSel){editSel.innerHTML=base+tierOpts;}
+}
+
 function onCustChange(){
   const name=document.getElementById('cust-select').value;
   const c=getCust(name);
   const bar=document.getElementById('cust-info-bar');
   const txt=document.getElementById('cust-info-text');
   const parts=[];
-  if(c.tier)parts.push(`Price tier: ${c.tier}`);
+  if(c.notes)parts.push(c.notes);
+  if(c.tier)parts.push(`Price tier: ${typeLabel(c.tier)}`);
   if(c.accountNumber)parts.push(`Account: ${c.accountNumber}`);
   if(parts.length){bar.style.display='block';txt.textContent=parts.join(' · ');}
   else bar.style.display='none';
   if(c.defaultRoute){
     const driverSel=document.getElementById('driver-select');
     if(!driverSel.value) driverSel.value=c.defaultRoute;
+  }
+  // Auto-select the customer's price tier as the order type
+  const typeSel=document.getElementById('type-select');
+  if(c.tier&&typeSel.querySelector(`option[value="${CSS.escape(c.tier)}"]`)){
+    typeSel.value=c.tier;
+  } else {
+    typeSel.value='retail_price';
   }
   refreshLinePrices();
 }
@@ -495,11 +498,11 @@ function lineHTML(l,num){
 function onProductInput(id,val){
   closeDropdown();
   if(!val.trim()){const l=lines.find(x=>x.id===id);if(l){l.productCode='';l.productName='';l.price=0;}updateTotals();return;}
-  const m=PRODUCTS.filter(p=>
-    p.name.toLowerCase().includes(val.toLowerCase())||
-    p.code.toLowerCase().includes(val.toLowerCase())||
-    (p.short&&p.short.toLowerCase()===val.toLowerCase())
-  ).slice(0,10);
+  const words=val.toLowerCase().split(/\s+/).filter(Boolean);
+  const m=PRODUCTS.filter(p=>{
+    const hay=(p.name+' '+p.code+' '+(p.short||'')).toLowerCase();
+    return words.every(w=>hay.includes(w));
+  }).slice(0,12);
   if(m.length)showDropdown(id,m,val);
 }
 function onProductFocus(id,val){if(val&&val.trim())onProductInput(id,val);}
@@ -591,8 +594,9 @@ function clearOrder(){
   document.getElementById('cust-input').classList.remove('filled');
   document.getElementById('cust-select').value='';
   document.getElementById('driver-select').value='';
-  document.getElementById('type-select').value='Custom';
+  document.getElementById('type-select').value='retail_price';
   document.getElementById('cust-info-bar').style.display='none';
+  document.getElementById('del-notes').value='';
   setDefaultDate();renderLines();
 }
 
@@ -609,7 +613,7 @@ async function saveOrder(){
   const newOrder={
     cust:custObj.accountNumber||custName, custName:custObj.name, type, driver, delDate,
     lines:filled.map(l=>({...l})), total, items,
-    deliveryNotes:'', custTier:custObj.tier||''
+    deliveryNotes:document.getElementById('del-notes').value||'', custTier:custObj.tier||''
   };
   savedOrders.push(newOrder);
   await saveOrderToDb(newOrder);
@@ -639,7 +643,8 @@ function getUniqueDates(){return[...new Set(savedOrders.map(o=>o.delDate))].sort
 function getMergedForRoute(routeOrders){
   const byCust={};
   routeOrders.forEach(o=>{
-    if(!byCust[o.cust])byCust[o.cust]={cust:o.custName||o.cust,acctNum:o.cust,orders:[],mergedLines:{},total:0,items:0,custNotes:o.deliveryNotes||'',custTier:o.custTier||''};
+    if(!byCust[o.cust])byCust[o.cust]={cust:o.custName||o.cust,acctNum:o.cust,orders:[],mergedLines:{},total:0,items:0,custNotes:'',custTier:o.custTier||''};
+    if(o.deliveryNotes){byCust[o.cust].custNotes=byCust[o.cust].custNotes?byCust[o.cust].custNotes+' | '+o.deliveryNotes:o.deliveryNotes;}
     const bc=byCust[o.cust];bc.orders.push(o.dbId||'');bc.total+=o.total;bc.items+=o.items;
     o.lines.forEach(l=>{
       if(!bc.mergedLines[l.productCode])bc.mergedLines[l.productCode]={...l,qty:0,lineTotal:0};
@@ -716,8 +721,10 @@ function renderRouteInner(){
     const done=!!(pickedState[rk]?.[c.cust]);
     const tierBadge=c.custTier?`<span class="tier-badge" style="margin-left:6px;font-size:10px">${c.custTier}</span>`:'';
     const custData=CUSTOMERS.find(x=>x.name===c.cust);
-    const windowBadge=(custData&&custData.windowStart&&custData.windowEnd)?`<span style="display:inline-flex;align-items:center;gap:3px;background:var(--blue-bg);color:var(--blue-text);border:1px solid #93c5fd;border-radius:6px;font-size:10px;font-weight:500;padding:2px 7px;margin-top:4px"><i class="ti ti-clock" style="font-size:11px"></i>${custData.windowStart.slice(0,5)}–${custData.windowEnd.slice(0,5)}</span>`:'';
-    const notesHtml=c.custNotes?`<div class="cust-notes-badge"><i class="ti ti-note" style="font-size:11px"></i>${c.custNotes}</div>`:'';
+    const windowBadge='';
+    const custNotesHtml=(custData&&custData.notes)?`<div class="cust-notes-badge"><i class="ti ti-note" style="font-size:11px"></i>${custData.notes}</div>`:'';
+    const delNotesHtml=c.custNotes?`<div class="cust-notes-badge" style="background:var(--blue-bg);color:var(--blue-text);border-color:#93c5fd"><i class="ti ti-truck" style="font-size:11px"></i>${c.custNotes}</div>`:'';
+    const notesHtml=custNotesHtml+delNotesHtml;
     return `<div class="cust-block">
       <div class="cust-header${done?' done':''}">
         <div><div class="cust-name">${done?'<i class="ti ti-check"></i> ':''}${c.cust}${tierBadge}</div>
@@ -775,7 +782,10 @@ function printRoute(){
     const mergedArr=Object.values(c.mergedLines);
     const allDone=!!(pickedState[rk]?.[c.cust]);
     const shorthands=mergedArr.map(l=>`<strong>${l.qty} ${getShort(l.productCode)}</strong>`).join(' &nbsp; ');
-    const notesCell=c.custNotes?`<div style="font-size:10px;margin-top:2px;font-style:italic">★ ${c.custNotes}</div>`:'';
+    const pCust=CUSTOMERS.find(x=>x.name===c.cust);
+    const custNoteLine=(pCust&&pCust.notes)?`<div style="font-size:10px;margin-top:2px;font-style:italic">★ ${pCust.notes}</div>`:'';
+    const delNoteLine=c.custNotes?`<div style="font-size:10px;margin-top:2px;font-style:italic">→ ${c.custNotes}</div>`:'';
+    const notesCell=custNoteLine+delNoteLine;
     return `<tr>
       <td style="padding:5px 10px;border-bottom:1px solid #000;font-weight:600;width:175px;vertical-align:top">${c.cust}${notesCell}</td>
       <td style="padding:5px 10px;border-bottom:1px solid #000;font-size:14px;vertical-align:middle">${shorthands}</td>
@@ -838,7 +848,7 @@ function printDeliveryNotes(){
         </thead>
         <tbody>${itemRows}</tbody>
       </table>
-      <div style="flex:1"></div>
+      <div style="flex:1;min-height:20px"></div>
       <div>
         <div style="display:flex;justify-content:flex-end;margin-bottom:14px">
           <div style="width:200px">
@@ -868,8 +878,8 @@ function printDeliveryNotes(){
         </div>
       </div>
     </div>`;
-    const pageBreak='page-break-after:always;height:100vh';
-    return `<div style="${pageBreak}">${noteHtml}</div><div style="${ci<customers.length-1?pageBreak:'min-height:100vh'}">${noteHtml}</div>`;
+    const pageBreak='page-break-after:always';
+    return `<div style="${pageBreak};min-height:100vh">${noteHtml}</div><div style="${ci<customers.length-1?pageBreak+';min-height:100vh':'min-height:100vh'}">${noteHtml}</div>`;
   }).join('');
 
   const w=window.open('','_blank');
@@ -914,7 +924,7 @@ function exportSageCSV(){
 function renderLog(){
   const body=document.getElementById('log-body');
   if(!savedOrders.length){body.innerHTML='<div class="no-items">No orders saved yet</div>';return;}
-  const typeClass={Retail:'badge-rt',Wholesale:'badge-wh','Custom (tier-based)':'badge-cu'};
+  const typeClass={retail_price:'badge-rt',wholesale_price:'badge-wh'};
   const byDate={};savedOrders.forEach(o=>{if(!byDate[o.delDate])byDate[o.delDate]=[];byDate[o.delDate].push(o);});
   let html=`<div class="log-row log-hdr"><span>Order</span><span>Customer</span><span>Lines</span><span>Total</span><span>Route</span><span>Type</span><span></span></div>`;
   Object.keys(byDate).sort().forEach(d=>{
@@ -927,7 +937,7 @@ function renderLog(){
         <span style="text-align:center">${o.lines.length}</span>
         <span style="text-align:right;font-weight:500">£${o.total.toFixed(2)}</span>
         <span style="font-size:11px;color:#5a5a58">${o.driver}</span>
-        <span><span class="badge ${typeClass[o.type]||'badge-wh'}">${o.type==='Custom (tier-based)'?'Tier':'Wholesale'}</span></span>
+        <span><span class="badge ${typeClass[o.type]||'badge-cu'}">${typeLabel(o.type)}</span></span>
         <span><button class="btn" style="height:26px;padding:0 8px;font-size:11px" onclick="openEditModal(${idx})"><i class="ti ti-pencil"></i> Edit</button></span>
       </div>`;
     });
@@ -953,9 +963,11 @@ function openEditModal(idx){
   document.getElementById('edit-cust-input').classList.add('filled');
   document.getElementById('edit-cust').value=custName;
 
-  document.getElementById('edit-type').value=o.type;
+  document.getElementById('edit-type').value=o.type||'retail_price';
+  if(!document.getElementById('edit-type').value)document.getElementById('edit-type').value='retail_price';
   document.getElementById('edit-date').value=o.delDate;
   document.getElementById('edit-driver').value=o.driver;
+  document.getElementById('edit-del-notes').value=o.deliveryNotes||'';
   document.getElementById('edit-modal-title').textContent=`Edit order — ${custName}`;
 
   renderEditLines();
@@ -1017,7 +1029,11 @@ function getEditPrice(code){
 function onEditProductInput(id,val){
   closeEditDropdown();
   if(!val.trim()){const l=editLines.find(x=>x.id===id);if(l){l.productCode='';l.productName='';l.price=0;}updateEditTotal();return;}
-  const m=PRODUCTS.filter(p=>p.name.toLowerCase().includes(val.toLowerCase())||p.code.toLowerCase().includes(val.toLowerCase())||(p.short&&p.short.toLowerCase()===val.toLowerCase())).slice(0,10);
+  const words=val.toLowerCase().split(/\s+/).filter(Boolean);
+  const m=PRODUCTS.filter(p=>{
+    const hay=(p.name+' '+p.code+' '+(p.short||'')).toLowerCase();
+    return words.every(w=>hay.includes(w));
+  }).slice(0,12);
   if(m.length)showEditDropdown(id,m,val);
 }
 function onEditProductFocus(id,val){if(val&&val.trim())onEditProductInput(id,val);}
@@ -1094,10 +1110,12 @@ async function saveEditOrder(){
   const custObj=getCust(cust);
   savedOrders[editOrderIdx]={
     ...savedOrders[editOrderIdx],
-    cust,type,driver,delDate,
+    cust:custObj.accountNumber||cust, custName:custObj.name||cust,
+    type,driver,delDate,
     lines:filled.map(l=>({...l})),
     total,items,
-    custNotes:custObj.notes,custTier:custObj.tier||''
+    deliveryNotes:document.getElementById('edit-del-notes').value||'',
+    custTier:custObj.tier||''
   };
   await updateOrderInDb(savedOrders[editOrderIdx]);
   updateBadges();
@@ -1193,6 +1211,9 @@ function renderCustomerManager(){
         <span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:6px">${c.accountNumber}</span>
         <button onclick="removeCustomer(${ci})" style="margin-left:auto;background:none;border:none;cursor:pointer;color:#9a9a97;font-size:14px"><i class="ti ti-trash"></i></button>
       </div>
+      <div class="cm-field"><label>Notes</label>
+        <textarea oninput="updateCustNote(${ci},this.value)" placeholder="e.g. Takes greaseproof cut to 12&quot;">${c.notes||''}</textarea>
+      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
         <div class="cm-field"><label>Price tier</label>
           <input type="text" value="${c.tier||''}" onchange="updateCustTier(${ci},this.value)" placeholder="e.g. wholesale_price_1">
@@ -1236,6 +1257,7 @@ function exportCustomersCSV(){
   CUSTOMERS.forEach(c=>rows.push([c.accountNumber,c.name,c.tier||'',c.defaultRoute||'']));
   downloadCSV(rows,'customers.csv');
 }
+function updateCustNote(i,val){CUSTOMERS[i].notes=val;saveCustomerToDb(CUSTOMERS[i]);}
 
 // ── CSV UTILS ─────────────────────────────────────────────────────────────────
 function parseCSVText(text){
@@ -1287,6 +1309,7 @@ async function init(){
   setDefaultDate();
   addLine(false);
   await loadData();
+  populateTypeDropdown();
   populateCustDropdown();
   updateBadges();
 }
