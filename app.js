@@ -27,9 +27,8 @@ let PRODUCTS=[],CUSTOMERS=[];
 let lines=[],savedOrders=[],lineIdCounter=0;
 let activeDD=null,ddHighlight=-1;
 let activeRouteDay=null,activeRoute=null,pickedState={},deliveredRoutes={};
-let activeCat='All';
-let saveTimer=null;
 let PRICE_TIERS=[];
+let CUSTOMER_OVERRIDES=[];
 
 // ── SUPABASE CONNECTION ──────────────────────────────────────────────────────
 const SUPABASE_URL = 'https://fcxtwaqrrrghysupbulz.supabase.co/rest/v1';
@@ -81,12 +80,13 @@ async function sbUpsert(table, body){
 async function loadData(){
   showSaveStatus('Loading…');
   try{
-    const [prodRows, priceRows, custRows, orderRows, orderLineRows] = await Promise.all([
+    const [prodRows, priceRows, custRows, orderRows, orderLineRows, overrideRows] = await Promise.all([
       sbGet('Products', '?select=*&order=code'),
       sbGet('Prices', '?select=*'),
-      sbGet('Customers', '?select=*&order=AccountName'),
+      sbGet('Customers', '?select=*'),
       sbGet('Orders', '?select=*&order=CreatedAt'),
-      sbGet('order_lines', '?select=*')
+      sbGet('order_lines', '?select=*'),
+      sbGet('customer_overrides', '?select=*').catch(e=>{console.error('customer_overrides load failed — check the table/column names exist:',e);return [];})
     ]);
 
     // Products — merge with Prices by code
@@ -106,9 +106,21 @@ async function loadData(){
     }
 
     // Customers
+    // NOTE: AccountNumber/AccountName/PriceTier were renamed in Supabase to
+    // "SLCustomerAccounts.CustomerAccountNumber", "SLCustomerAccounts.CustomerAccountName",
+    // and "PriceBands.Name" (literal dots in the column names, to mirror Sage's own naming).
+    // Sorted client-side rather than via ?order=, since a literal dot in a PostgREST
+    // order/filter parameter is interpreted as an embedded-table reference, not a
+    // literal character — sorting here avoids that ambiguity entirely.
     CUSTOMERS = custRows.map(c=>({
-      accountNumber:c.AccountNumber, name:c.AccountName,
-      tier:c.PriceTier||'', defaultRoute:c.Route||'', notes:c.Notes||''
+      accountNumber:c['SLCustomerAccounts.CustomerAccountNumber'], name:c['SLCustomerAccounts.CustomerAccountName'],
+      tier:c['PriceBands.Name']||'', defaultRoute:c.Route||'', notes:c.Notes||'',
+      fallbackPrice:c.fallback_price||''
+    })).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+
+    // Customer-specific price overrides (account + product code -> fixed price)
+    CUSTOMER_OVERRIDES = overrideRows.map(o=>({
+      accountNumber:o.AccountNumber, productCode:o.ProductCode, price:Number(o.Price)
     }));
 
     // Orders + lines
@@ -124,7 +136,7 @@ async function loadData(){
         dbId:Number(o.id), cust:o.AccountNumber, type:o.OrderType||'retail_price',
         driver:o.Route, delDate:(o.DeliveryDate||'').slice(0,10), total:Number(o.Total),
         items:oLines.reduce((a,l)=>a+l.qty,0),
-        deliveryNotes:o.DeliveryNotes||'', lines:oLines
+        deliveryNotes:o.DeliveryNotes||'', picked:!!o.Picked, lines:oLines
       };
     });
 
@@ -135,13 +147,22 @@ async function loadData(){
       o.custTier = c ? c.tier : '';
     });
 
+    // Rebuild picked state from the database so ticks survive refresh
     pickedState = {}; deliveredRoutes = {};
+    savedOrders.forEach(o=>{
+      if(o.picked){
+        const rk = o.delDate+'||'+o.driver;
+        if(!pickedState[rk]) pickedState[rk]={};
+        pickedState[rk][o.custName]=true;
+      }
+    });
     showSaveStatus('Loaded');
   } catch(e){
     console.error(e);
     showSaveStatus('Could not load — check connection', true);
     PRODUCTS = JSON.parse(JSON.stringify(DEFAULT_PRODUCTS));
     CUSTOMERS = [];
+    CUSTOMER_OVERRIDES = [];
   }
 }
 
@@ -170,15 +191,18 @@ async function deleteProductFromDb(code){
 async function saveCustomerToDb(c){
   try{
     await sbUpsert('Customers', [{
-      AccountNumber:c.accountNumber, AccountName:c.name,
-      PriceTier:c.tier||null, Route:c.defaultRoute||null, Notes:c.notes||null
+      'SLCustomerAccounts.CustomerAccountNumber':c.accountNumber, 'SLCustomerAccounts.CustomerAccountName':c.name,
+      'PriceBands.Name':c.tier||null, Route:c.defaultRoute||null, Notes:c.notes||null,
+      fallback_price:c.fallbackPrice||null
     }]);
     showSaveStatus('Saved');
   }catch(e){console.error(e);showSaveStatus('Save failed',true);}
 }
 async function deleteCustomerFromDb(accountNumber){
   try{
-    await sbDelete('Customers', `?AccountNumber=eq.${encodeURIComponent(accountNumber)}`);
+    // Column name contains a literal dot, so it must be double-quoted (URL-encoded as %22)
+    // in the filter — otherwise PostgREST reads the dot as an embedded-table reference.
+    await sbDelete('Customers', `?%22SLCustomerAccounts.CustomerAccountNumber%22=eq.${encodeURIComponent(accountNumber)}`);
     showSaveStatus('Saved');
   }catch(e){console.error(e);showSaveStatus('Delete failed',true);}
 }
@@ -267,23 +291,30 @@ function importBackup(e){
   reader.readAsText(file);e.target.value='';
 }
 
-// ── GENERIC SAVE (for customer field edits that still call scheduleSave) ──────
-function scheduleSave(){
-  clearTimeout(saveTimer);
-  saveTimer=setTimeout(async ()=>{
-    for(const c of CUSTOMERS) await saveCustomerToDb(c);
-    showSaveStatus('Saved');
-  },800);
-}
-
 // ── PRICING LOGIC ─────────────────────────────────────────────────────────────
-// Order type is now a column name in the Prices table (retail_price,
-// wholesale_price, or any tier column like "Harlequin"). Price lookup is
-// simply that column for the product, falling back to retail_price.
+// Order type is a column name in the Prices table (retail_price,
+// wholesale_price, or any tier column like "Harlequin"). Lookup order:
+//   1. A customer-specific override for this exact product (customer_overrides table)
+//   2. The chosen tier column for the product, if the product has a price set for it
+//   3. The customer's configured fallback price tier (Customers.fallback_price)
+//   4. retail_price, as the last resort
+function findOverride(code,custName){
+  if(!custName)return null;
+  const cust=getCust(custName);
+  if(!cust.accountNumber)return null;
+  return CUSTOMER_OVERRIDES.find(o=>o.accountNumber===cust.accountNumber&&o.productCode===code)||null;
+}
 function getPrice(code,type,custName){
   const p=PRODUCTS.find(x=>x.code===code);if(!p)return 0;
+  const ov=findOverride(code,custName);
+  if(ov)return Number(ov.price);
   if(type&&p.prices&&p.prices[type]!==undefined&&p.prices[type]!==null){
     return Number(p.prices[type]);
+  }
+  const cust=custName?getCust(custName):null;
+  const fb=(cust&&cust.fallbackPrice)||'retail_price';
+  if(p.prices&&p.prices[fb]!==undefined&&p.prices[fb]!==null){
+    return Number(p.prices[fb]);
   }
   return Number(p.prices?.retail_price)||p.retail||0;
 }
@@ -296,12 +327,16 @@ function typeLabel(type){
 
 function getPriceLabel(code,type,custName){
   const p=PRODUCTS.find(x=>x.code===code);
+  if(findOverride(code,custName))return 'Override';
   if(type&&p&&p.prices&&p.prices[type]!==undefined&&p.prices[type]!==null)return typeLabel(type);
+  const cust=custName?getCust(custName):null;
+  const fb=(cust&&cust.fallbackPrice)||'retail_price';
+  if(p&&p.prices&&p.prices[fb]!==undefined&&p.prices[fb]!==null)return typeLabel(fb);
   return 'Retail';
 }
 
 function getShort(code){const p=PRODUCTS.find(x=>x.code===code);return p?.short||code;}
-function getCust(name){return CUSTOMERS.find(c=>c.name===name)||{name,accountNumber:'',tier:'',defaultRoute:'',notes:'',overrides:{}};}
+function getCust(name){return CUSTOMERS.find(c=>c.name===name)||{name,accountNumber:'',tier:'',defaultRoute:'',notes:'',fallbackPrice:''};}
 
 // ── TAB SWITCHING ─────────────────────────────────────────────────────────────
 function switchTab(t){
@@ -476,7 +511,6 @@ function renderLines(){
 }
 
 function lineHTML(l,num){
-  const priceStr=l.price>0?'£'+l.price.toFixed(2):'—';
   const total=(l.qty&&l.price)?'£'+(l.qty*l.price).toFixed(2):'—';
   return `<div class="line-row" id="row-${l.id}">
     <span class="line-num">${num}</span>
@@ -489,10 +523,25 @@ function lineHTML(l,num){
       oninput="onQtyInput(${l.id},this.value)"
       onblur="onQtyBlur(${l.id},this.value)"
       onkeydown="onQtyKey(event,${l.id})"/>
-    <span class="price-cell" id="pc-${l.id}">${priceStr}</span>
+    <input class="price-input" id="pc-${l.id}" type="number" min="0" step="0.01" tabindex="-1" title="Override price for this order only"
+      value="${l.price>0?l.price.toFixed(2):''}" placeholder="£0.00"
+      oninput="onPriceInput(${l.id},this.value)" onblur="onPriceBlur(${l.id},this.value)"/>
     <span class="total-cell" id="tc-${l.id}">${total}</span>
     <button class="del-btn" onclick="removeLine(${l.id})"><i class="ti ti-x"></i></button>
   </div>`;
+}
+function onPriceInput(id,val){
+  const l=lines.find(x=>x.id===id);if(!l)return;
+  const v=parseFloat(val);
+  l.price=(v>=0&&!isNaN(v))?v:0;
+  const tc=document.getElementById('tc-'+id);
+  if(tc)tc.textContent=(l.qty&&l.price)?'£'+(l.qty*l.price).toFixed(2):'—';
+  updateTotals();
+}
+function onPriceBlur(id,val){
+  const l=lines.find(x=>x.id===id);
+  const inp=document.getElementById('pc-'+id);
+  if(l&&inp)inp.value=l.price>0?l.price.toFixed(2):'';
 }
 
 function onProductInput(id,val){
@@ -539,7 +588,7 @@ function selectProduct(lineId,code,name){
   closeDropdown();
   const inp=document.getElementById('pi-'+lineId);
   if(inp){inp.value=name;inp.classList.add('filled');}
-  document.getElementById('pc-'+lineId).textContent='£'+pr.toFixed(2);
+  document.getElementById('pc-'+lineId).value=pr>0?pr.toFixed(2):'';
   updateTotals();
   setTimeout(()=>{const qi=document.getElementById('qi-'+lineId);if(qi){qi.focus();qi.select();}},30);
 }
@@ -628,10 +677,22 @@ function updateBadges(){
 }
 
 // ── PICKING ───────────────────────────────────────────────────────────────────
-function togglePickCust(rk,cust){
+async function togglePickCust(rk,cust){
   if(!pickedState[rk])pickedState[rk]={};
-  pickedState[rk][cust]=!pickedState[rk][cust];
+  const nowPicked=!pickedState[rk][cust];
+  pickedState[rk][cust]=nowPicked;
   renderRouteInner();
+  // Persist to database — update every order for this customer on this route/day
+  const [day,route]=rk.split('||');
+  const matching=savedOrders.filter(o=>o.delDate===day&&o.driver===route&&(o.custName===cust||o.cust===cust));
+  for(const o of matching){
+    o.picked=nowPicked;
+    if(o.dbId){
+      try{
+        await sbUpdate('Orders', `?id=eq.${o.dbId}`, {Picked:nowPicked});
+      }catch(e){console.error(e);showSaveStatus('Save failed',true);}
+    }
+  }
 }
 function getPickedCount(rk,customers){
   if(!pickedState[rk])return 0;
@@ -994,7 +1055,6 @@ function renderEditLines(){
   const c=document.getElementById('edit-lines');
   if(!editLines.length){c.innerHTML='<div class="no-items" style="padding:16px">No lines — add one below</div>';updateEditTotal();return;}
   c.innerHTML=editLines.map((l,i)=>{
-    const priceStr=l.price>0?'£'+l.price.toFixed(2):'—';
     const total=(l.qty&&l.price)?'£'+(l.qty*l.price).toFixed(2):'—';
     return `<div class="line-row" id="erow-${l.id}">
       <span class="line-num">${i+1}</span>
@@ -1006,12 +1066,27 @@ function renderEditLines(){
       <input class="qty-input" id="eqi-${l.id}" type="number" min="0.5" step="1" value="${l.qty}"
         oninput="onEditQtyInput(${l.id},this.value)" onblur="onEditQtyBlur(${l.id},this.value)"
         onkeydown="onEditQtyKey(event,${l.id})"/>
-      <span class="price-cell">${priceStr}</span>
+      <input class="price-input" id="epc-${l.id}" type="number" min="0" step="0.01" tabindex="-1" title="Override price for this order only"
+        value="${l.price>0?l.price.toFixed(2):''}" placeholder="£0.00"
+        oninput="onEditPriceInput(${l.id},this.value)" onblur="onEditPriceBlur(${l.id},this.value)"/>
       <span class="total-cell" id="etc-${l.id}">${total}</span>
       <button class="del-btn" onclick="removeEditLine(${l.id})"><i class="ti ti-x"></i></button>
     </div>`;
   }).join('');
   updateEditTotal();
+}
+function onEditPriceInput(id,val){
+  const l=editLines.find(x=>x.id===id);if(!l)return;
+  const v=parseFloat(val);
+  l.price=(v>=0&&!isNaN(v))?v:0;
+  const tc=document.getElementById('etc-'+id);
+  if(tc)tc.textContent=(l.qty&&l.price)?'£'+(l.qty*l.price).toFixed(2):'—';
+  updateEditTotal();
+}
+function onEditPriceBlur(id,val){
+  const l=editLines.find(x=>x.id===id);
+  const inp=document.getElementById('epc-'+id);
+  if(l&&inp)inp.value=l.price>0?l.price.toFixed(2):'';
 }
 
 function updateEditTotal(){
@@ -1065,6 +1140,8 @@ function selectEditProduct(lineId,code,name){
   closeEditDropdown();
   const inp=document.getElementById('epi-'+lineId);
   if(inp){inp.value=name;inp.classList.add('filled');}
+  const pc=document.getElementById('epc-'+lineId);
+  if(pc)pc.value=pr>0?pr.toFixed(2):'';
   const tc=document.getElementById('etc-'+lineId);
   if(tc)tc.textContent='£'+(l.qty*pr).toFixed(2);
   updateEditTotal();
@@ -1138,14 +1215,7 @@ async function deleteOrder(){
 
 // ── PRODUCT MANAGER ───────────────────────────────────────────────────────────
 function renderProductManager(){
-  const cats=['All',...new Set(PRODUCTS.map(p=>p.prices?.category||'').filter(Boolean))];
-  if(cats.length<=1){
-    document.getElementById('cat-filter').innerHTML='';
-  } else {
-    document.getElementById('cat-filter').innerHTML=cats.map(c=>`<button class="cat-btn${c===activeCat?' active':''}" onclick="setCat('${c}')">${c}</button>`).join('');
-  }
-  const filtered=activeCat==='All'?PRODUCTS:PRODUCTS.filter(p=>(p.prices?.category||'')===activeCat);
-  document.getElementById('pm-grid').innerHTML=filtered.map(p=>{
+  document.getElementById('pm-grid').innerHTML=PRODUCTS.map(p=>{
     return `<div class="pm-card" style="flex-direction:row;align-items:center;gap:10px;padding:10px 14px">
       <div style="min-width:180px;flex:2;margin-right:4px">
         <div class="pm-name">${p.name}</div>
@@ -1171,7 +1241,6 @@ function renderProductManager(){
     </div>`;
   }).join('');
 }
-function setCat(c){activeCat=c;renderProductManager();}
 function updateShort(code,val){const p=PRODUCTS.find(x=>x.code===code);if(p){p.short=val.toUpperCase().trim();saveProductToDb(p);}}
 function updatePrice(code,field,val){
   const p=PRODUCTS.find(x=>x.code===code);
@@ -1214,9 +1283,16 @@ function renderCustomerManager(){
       <div class="cm-field"><label>Notes</label>
         <textarea oninput="updateCustNote(${ci},this.value)" placeholder="e.g. Takes greaseproof cut to 12&quot;">${c.notes||''}</textarea>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
         <div class="cm-field"><label>Price tier</label>
           <input type="text" value="${c.tier||''}" onchange="updateCustTier(${ci},this.value)" placeholder="e.g. wholesale_price_1">
+        </div>
+        <div class="cm-field"><label>Fallback price</label>
+          <select onchange="updateCustFallback(${ci},this.value)">
+            <option value=""${!c.fallbackPrice?' selected':''}>— Retail (default) —</option>
+            <option value="retail_price"${c.fallbackPrice==='retail_price'?' selected':''}>Retail</option>
+            <option value="wholesale_price"${c.fallbackPrice==='wholesale_price'?' selected':''}>Wholesale</option>
+          </select>
         </div>
         <div class="cm-field"><label>Default route</label>
           <select onchange="updateCustRoute(${ci},this.value)">
@@ -1232,16 +1308,67 @@ function renderCustomerManager(){
           </select>
         </div>
       </div>
+      <div class="cm-field" style="margin-top:8px"><label>Price overrides</label>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          ${CUSTOMER_OVERRIDES.filter(o=>o.accountNumber===c.accountNumber).map(o=>{
+            const prod=PRODUCTS.find(p=>p.code===o.productCode);
+            return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:4px 8px;background:var(--bg2);border-radius:6px">
+              <span>${prod?prod.name:o.productCode}</span>
+              <span style="display:flex;align-items:center;gap:6px">
+                <strong>£${Number(o.price).toFixed(2)}</strong>
+                <button onclick="removeOverride('${c.accountNumber}','${o.productCode}')" style="background:none;border:none;cursor:pointer;color:#9a9a97"><i class="ti ti-x"></i></button>
+              </span>
+            </div>`;
+          }).join('')}
+          <button class="btn" style="align-self:flex-start;height:26px;padding:0 8px;font-size:11px" onclick="addOverride(${ci})"><i class="ti ti-plus"></i> Add override</button>
+        </div>
+      </div>
     </div>`;
   }).join('');
 }
 function updateCustTier(i,val){CUSTOMERS[i].tier=val;saveCustomerToDb(CUSTOMERS[i]);}
 function updateCustRoute(i,val){CUSTOMERS[i].defaultRoute=val;saveCustomerToDb(CUSTOMERS[i]);}
+function updateCustFallback(i,val){CUSTOMERS[i].fallbackPrice=val;saveCustomerToDb(CUSTOMERS[i]);}
+function addOverride(ci){
+  const c=CUSTOMERS[ci];
+  const search=prompt('Product code or name to search:');if(!search)return;
+  const matches=PRODUCTS.filter(p=>(p.name+' '+p.code).toLowerCase().includes(search.toLowerCase()));
+  if(!matches.length){alert('No matching product found.');return;}
+  let p=matches[0];
+  if(matches.length>1){
+    const list=matches.slice(0,10).map((m,i)=>`${i+1}. ${m.name} (${m.code})`).join('\n');
+    const choice=prompt(`Multiple matches found — enter a number:\n${list}`);
+    const idx=parseInt(choice)-1;
+    if(!matches[idx]){alert('Invalid selection.');return;}
+    p=matches[idx];
+  }
+  const priceStr=prompt(`Override price for ${p.name} (£):`);
+  const price=parseFloat(priceStr);
+  if(isNaN(price)||price<0){alert('Invalid price.');return;}
+  saveOverride(c.accountNumber,p.code,price);
+}
+async function saveOverride(accountNumber,productCode,price){
+  try{
+    await sbUpsert('customer_overrides',[{AccountNumber:accountNumber,ProductCode:productCode,Price:price}]);
+    const existing=CUSTOMER_OVERRIDES.find(o=>o.accountNumber===accountNumber&&o.productCode===productCode);
+    if(existing)existing.price=price;else CUSTOMER_OVERRIDES.push({accountNumber,productCode,price});
+    showSaveStatus('Saved');
+    renderCustomerManager();
+  }catch(e){console.error(e);showSaveStatus('Save failed',true);}
+}
+function removeOverride(accountNumber,productCode){
+  if(!confirm('Remove this price override?'))return;
+  CUSTOMER_OVERRIDES=CUSTOMER_OVERRIDES.filter(o=>!(o.accountNumber===accountNumber&&o.productCode===productCode));
+  sbDelete('customer_overrides',`?AccountNumber=eq.${encodeURIComponent(accountNumber)}&ProductCode=eq.${encodeURIComponent(productCode)}`)
+    .then(()=>showSaveStatus('Saved'))
+    .catch(e=>{console.error(e);showSaveStatus('Delete failed',true);});
+  renderCustomerManager();
+}
 function addCustomer(){
   const name=prompt('Customer name:');if(!name)return;
   if(CUSTOMERS.find(c=>c.name.toLowerCase()===name.toLowerCase())){alert('Customer already exists.');return;}
   const accNum=prompt('Account number:');if(!accNum)return;
-  const c={name,accountNumber:accNum,tier:'',defaultRoute:''};
+  const c={name,accountNumber:accNum,tier:'',defaultRoute:'',fallbackPrice:''};
   CUSTOMERS.push(c);
   saveCustomerToDb(c).then(()=>{populateCustDropdown();renderCustomerManager();});
 }

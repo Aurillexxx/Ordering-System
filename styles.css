@@ -69,6 +69,9 @@ body{font-family:'Inter',system-ui,sans-serif;font-size:14px;color:var(--text);b
 .qty-input{width:100%;height:32px;border:1px solid var(--border);border-radius:var(--radius);padding:0 8px;font-size:13px;text-align:center;background:var(--bg);color:var(--text);font-family:inherit}
 .qty-input:focus{outline:none;border-color:#a0a09c;box-shadow:0 0 0 3px rgba(0,0,0,.06)}
 .price-cell{font-size:13px;color:var(--text2);text-align:right;padding-right:4px}
+.price-input{width:100%;height:32px;border:1px solid transparent;border-radius:var(--radius);padding:0 8px;font-size:13px;text-align:right;background:transparent;color:var(--text2);font-family:inherit}
+.price-input:hover{border-color:var(--border)}
+.price-input:focus{outline:none;border-color:#a0a09c;box-shadow:0 0 0 3px rgba(0,0,0,.06);background:var(--bg);color:var(--text)}
 .total-cell{font-size:13px;font-weight:500;text-align:right;padding-right:4px}
 .del-btn{width:28px;height:28px;border:none;background:none;color:var(--text3);cursor:pointer;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:16px}
 .del-btn:hover{background:var(--red-bg);color:var(--red-text)}
@@ -144,10 +147,6 @@ body{font-family:'Inter',system-ui,sans-serif;font-size:14px;color:var(--text);b
 .pm-field input,.pm-field select{height:28px;border:1px solid var(--border);border-radius:6px;padding:0 6px;font-size:12px;background:var(--bg2);color:var(--text);font-family:inherit;width:100%}
 .pm-field input:focus,.pm-field select:focus{outline:none;border-color:#a0a09c;background:var(--bg)}
 .pm-short-preview{font-family:monospace;font-size:11px;font-weight:700;background:var(--bg3);color:var(--text2);padding:2px 6px;border-radius:4px;white-space:nowrap}
-.cat-filter{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
-.cat-btn{padding:5px 12px;border-radius:20px;font-size:12px;cursor:pointer;border:1px solid var(--border2);background:var(--bg);color:var(--text2);font-family:inherit}
-.cat-btn:hover{background:var(--bg2)}
-.cat-btn.active{background:var(--text);color:var(--bg);border-color:var(--text);font-weight:500}
 /* customer manager */
 .cm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:8px}
 .cm-card{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px;display:flex;flex-direction:column;gap:8px}
