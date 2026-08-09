@@ -11,7 +11,7 @@ const CONFIG = {
   // Edge Function endpoint + shared key. APP_SHARED_KEY must be EXACTLY the
   // same string you saved as the APP_SHARED_KEY secret on the Edge Function.
   FUNCTIONS_URL: 'https://fcxtwaqrrrghysupbulz.supabase.co/functions/v1/sage',
-  APP_SHARED_KEY: 'set-a-long-random-string',                    // ← EDIT ME
+  APP_SHARED_KEY: 'j8s9]6CYOq*MmVUAzAYRy0-PmR_!x82"',                    // ← EDIT ME
 
   // Sage OAuth (the Client Secret lives ONLY in the Edge Function secrets)
   SAGE_CLIENT_ID: '89TPM5AcTd8NCGATTE3UviwDMsukxhMU',
@@ -19,11 +19,11 @@ const CONFIG = {
 
   // Printed on delivery notes                                    // ← EDIT ME
   COMPANY: {
-    name: 'Your Company Name',
-    lines: ['Address line 1', 'Address line 2', 'Postcode', 'Tel: 0000 000000'],
+    name: 'RICHMOND PAPER SUPPLY COMPANY (LIVERPOOL) LIMITED',
+    lines: ['1-3 Forge St', 'Bootle', 'L20 8JG', 'Tel: 0151 933 1000'],
   },
 
-  ROUTES: ['Brian', 'Chris', 'Ian', 'John', 'Mike', 'Nick', 'Steve', 'Misc'],
+  ROUTES: ['Brian', 'Chris', 'Ian', 'John', 'Mike', 'Nick', 'Steve', 'Misc', 'Collect'],
 };
 
 const TYPE_TO_COL = {
