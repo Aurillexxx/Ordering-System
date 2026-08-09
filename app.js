@@ -1,1443 +1,1194 @@
-// ── DEFAULT DATA ──────────────────────────────────────────────────────────────
-const DEFAULT_PRODUCTS=[
-  {code:"DR001",name:"Coca-Cola 330ml Case (24)",cat:"Soft Drinks",unit:"Case",retail:18.00,wholesale:14.50,short:"C"},
-  {code:"DR002",name:"Pepsi 330ml Case (24)",cat:"Soft Drinks",unit:"Case",retail:17.50,wholesale:14.00,short:"P"},
-  {code:"DR003",name:"Still Water 500ml Case (24)",cat:"Soft Drinks",unit:"Case",retail:8.00,wholesale:6.00,short:"W"},
-  {code:"DR004",name:"Orange Juice 1L Case (12)",cat:"Soft Drinks",unit:"Case",retail:14.00,wholesale:11.00,short:"OJ"},
-  {code:"DR005",name:"Energy Drink 250ml Case (24)",cat:"Soft Drinks",unit:"Case",retail:22.00,wholesale:17.50,short:"ED"},
-  {code:"DR006",name:"Lemonade 330ml Case (24)",cat:"Soft Drinks",unit:"Case",retail:16.50,wholesale:13.00,short:"L"},
-  {code:"PK001",name:'Food Bag 10" Pack (100)',cat:"Packaging",unit:"Pack",retail:9.00,wholesale:7.20,short:"FB10"},
-  {code:"PK002",name:'Food Bag 14" Pack (100)',cat:"Packaging",unit:"Pack",retail:11.00,wholesale:8.80,short:"FB14"},
-  {code:"PK003",name:"Clear Container 500ml x50",cat:"Packaging",unit:"Pack",retail:12.50,wholesale:10.00,short:"CC"},
-  {code:"PK004",name:'Foil Tray 8" x50',cat:"Packaging",unit:"Pack",retail:15.00,wholesale:12.00,short:"FT"},
-  {code:"PK005",name:"Greaseproof Paper Roll",cat:"Packaging",unit:"Roll",retail:8.00,wholesale:6.00,short:"GP"},
-  {code:"PK006",name:"Takeaway Box Large x50",cat:"Packaging",unit:"Pack",retail:14.00,wholesale:11.20,short:"TBL"},
-  {code:"CL001",name:"Washing-Up Liquid 5L",cat:"Cleaning",unit:"Each",retail:6.50,wholesale:5.00,short:"WUL"},
-  {code:"CL002",name:"Hand Soap 5L",cat:"Cleaning",unit:"Each",retail:7.00,wholesale:5.50,short:"HS"},
-  {code:"DY001",name:"Napkins 1-ply x500",cat:"Dry Goods",unit:"Pack",retail:4.00,wholesale:3.20,short:"1ply"},
-  {code:"DY002",name:"Napkins 2-ply x500",cat:"Dry Goods",unit:"Pack",retail:4.50,wholesale:3.60,short:"2ply"},
-  {code:"DY003",name:"Disposable Cups 8oz x50",cat:"Dry Goods",unit:"Pack",retail:5.00,wholesale:4.00,short:"DC"},
-  {code:"DY004",name:"Wooden Cutlery Set x100",cat:"Dry Goods",unit:"Pack",retail:6.00,wholesale:4.80,short:"WC"},
-  {code:"DY005",name:"Paper Straws x250",cat:"Dry Goods",unit:"Pack",retail:3.50,wholesale:2.80,short:"PS"},
-];
-const ROUTES=["Brian","Chris","Ian","John","Mike","Misc","Nick","Steve"];
+/* ============================================================================
+   ORDER MANAGER v3 — app.js
+   Vanilla JS + Supabase (PostgREST) + Sage 200 via the "sage" Edge Function.
+   ========================================================================== */
 
-// ── STATE ─────────────────────────────────────────────────────────────────────
-let PRODUCTS=[],CUSTOMERS=[];
-let lines=[],savedOrders=[],lineIdCounter=0;
-let activeDD=null,ddHighlight=-1;
-let activeRouteDay=null,activeRoute=null,pickedState={},deliveredRoutes={};
-let PRICE_TIERS=[];
-let CUSTOMER_OVERRIDES=[];
+/* ───────────────────────────── CONFIG — EDIT ME ─────────────────────────── */
+const CONFIG = {
+  SUPABASE_URL: 'https://fcxtwaqrrrghysupbulz.supabase.co',
+  SUPABASE_KEY: 'sb_publishable_ri54UxsPSzwPq2b2fAnO0A_YaY1Q8qQ',
 
-// ── SUPABASE CONNECTION ──────────────────────────────────────────────────────
-const SUPABASE_URL = 'https://fcxtwaqrrrghysupbulz.supabase.co/rest/v1';
-const SUPABASE_KEY = 'sb_publishable_ri54UxsPSzwPq2b2fAnO0A_YaY1Q8qQ';
+  // Edge Function endpoint + shared key. APP_SHARED_KEY must be EXACTLY the
+  // same string you saved as the APP_SHARED_KEY secret on the Edge Function.
+  FUNCTIONS_URL: 'https://fcxtwaqrrrghysupbulz.supabase.co/functions/v1/sage',
+  APP_SHARED_KEY: 'set-a-long-random-string',                    // ← EDIT ME
 
-function sbHeaders(extra={}){
-  return {
-    'apikey': SUPABASE_KEY,
-    'Authorization': `Bearer ${SUPABASE_KEY}`,
+  // Sage OAuth (the Client Secret lives ONLY in the Edge Function secrets)
+  SAGE_CLIENT_ID: '89TPM5AcTd8NCGATTE3UviwDMsukxhMU',
+  SAGE_REDIRECT: 'https://orders.william-cooper.uk',
+
+  // Printed on delivery notes                                    // ← EDIT ME
+  COMPANY: {
+    name: 'Your Company Name',
+    lines: ['Address line 1', 'Address line 2', 'Postcode', 'Tel: 0000 000000'],
+  },
+
+  ROUTES: ['Brian', 'Chris', 'Ian', 'John', 'Mike', 'Nick', 'Steve', 'Misc'],
+};
+
+const TYPE_TO_COL = {
+  'Retail': 'retail_price',
+  'Wholesale': 'wholesale_price',
+  'Wholesale 1': 'wholesale_price_1',
+  'Wholesale 2': 'wholesale_price_2',
+};
+
+/* ───────────────────────────── tiny helpers ─────────────────────────────── */
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const num = (v) => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
+const money = (v) => '£' + num(v).toFixed(2);
+const dISO = (d) => { const x = d || new Date(); return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0'); };
+const dOnly = (s) => String(s ?? '').slice(0, 10);
+const dNice = (s) => { const d = new Date(dOnly(s) + 'T12:00:00'); return isNaN(d) ? String(s) : d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }); };
+
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (_) {} },
+};
+
+let toastTimer = null;
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.toggle('err', !!isErr);
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), isErr ? 6000 : 3000);
+}
+function loading(on, text) {
+  $('loadingText').textContent = text || 'Working…';
+  $('loading').classList.toggle('open', !!on);
+}
+
+/* ───────────────────────────── theme ────────────────────────────────────── */
+(function initTheme() {
+  const saved = store.get('theme');
+  if (saved === 'dark' || (!saved && matchMedia('(prefers-color-scheme: dark)').matches)) {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  }
+})();
+$('themeToggle').addEventListener('click', () => {
+  const el = document.documentElement;
+  const next = el.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  el.setAttribute('data-theme', next);
+  store.set('theme', next);
+});
+
+/* ───────────────────────────── Supabase REST ────────────────────────────── */
+async function sb(method, pathAndQuery, body, prefer) {
+  const headers = {
+    apikey: CONFIG.SUPABASE_KEY,
+    Authorization: 'Bearer ' + CONFIG.SUPABASE_KEY,
     'Content-Type': 'application/json',
-    ...extra
   };
-}
-
-async function sbGet(table, query=''){
-  const res = await fetch(`${SUPABASE_URL}/${table}${query}`, { headers: sbHeaders() });
-  if(!res.ok) throw new Error(`GET ${table} failed: ${res.status}`);
-  return res.json();
-}
-async function sbInsert(table, body){
-  const res = await fetch(`${SUPABASE_URL}/${table}`, {
-    method:'POST', headers: sbHeaders({'Prefer':'return=representation'}), body: JSON.stringify(body)
+  if (prefer) headers['Prefer'] = prefer;
+  const res = await fetch(CONFIG.SUPABASE_URL + '/rest/v1/' + pathAndQuery, {
+    method, headers, body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if(!res.ok) throw new Error(`INSERT ${table} failed: ${res.status} ${await res.text()}`);
-  return res.json();
+  const text = await res.text();
+  if (!res.ok) throw new Error(method + ' ' + pathAndQuery.split('?')[0] + ' failed (' + res.status + '): ' + text.slice(0, 300));
+  return text ? JSON.parse(text) : null;
 }
-async function sbUpdate(table, query, body){
-  const res = await fetch(`${SUPABASE_URL}/${table}${query}`, {
-    method:'PATCH', headers: sbHeaders({'Prefer':'return=representation'}), body: JSON.stringify(body)
+const sbGet = (q) => sb('GET', q);
+const sbPost = (q, b, p) => sb('POST', q, b, p);
+const sbPatch = (q, b) => sb('PATCH', q, b, 'return=minimal');
+const sbDelete = (q) => sb('DELETE', q);
+
+/* Edge Function caller */
+async function fn(action, payload) {
+  const res = await fetch(CONFIG.FUNCTIONS_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-app-key': CONFIG.APP_SHARED_KEY },
+    body: JSON.stringify(Object.assign({ action }, payload || {})),
   });
-  if(!res.ok) throw new Error(`UPDATE ${table} failed: ${res.status} ${await res.text()}`);
-  return res.json();
-}
-async function sbDelete(table, query){
-  const res = await fetch(`${SUPABASE_URL}/${table}${query}`, { method:'DELETE', headers: sbHeaders() });
-  if(!res.ok) throw new Error(`DELETE ${table} failed: ${res.status}`);
-}
-async function sbUpsert(table, body){
-  const res = await fetch(`${SUPABASE_URL}/${table}`, {
-    method:'POST', headers: sbHeaders({'Prefer':'resolution=merge-duplicates,return=representation'}), body: JSON.stringify(body)
-  });
-  if(!res.ok) throw new Error(`UPSERT ${table} failed: ${res.status} ${await res.text()}`);
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ('Sage function error (' + res.status + ')'));
+  return data;
 }
 
-// In-memory id maps so the rest of the app can keep using names/codes as keys
+/* ───────────────────────────── state ────────────────────────────────────── */
+let PRODUCTS = [];      // { code, name, shorthand, prices:{col:val} }
+let PRICE_TIERS = [];   // Prices columns except 'code'
+let CUSTOMERS = [];     // rows from Customers
+let ORDERS = [];        // rows from Orders, each with .lines[]
+let OVERRIDES = [];     // rows from customer_overrides
+let BAND_MAP = [];      // rows from price_band_map
+let ROUTES = [];
 
-// ── LOAD ALL DATA FROM SUPABASE ──────────────────────────────────────────────
-async function loadData(){
-  showSaveStatus('Loading…');
-  try{
-    const [prodRows, priceRows, custRows, orderRows, orderLineRows, overrideRows] = await Promise.all([
-      sbGet('Products', '?select=*&order=code'),
-      sbGet('Prices', '?select=*'),
-      sbGet('Customers', '?select=*'),
-      sbGet('Orders', '?select=*&order=CreatedAt'),
-      sbGet('order_lines', '?select=*'),
-      sbGet('customer_overrides', '?select=*').catch(e=>{console.error('customer_overrides load failed — check the table/column names exist:',e);return [];})
-    ]);
+const custByAcct = (a) => CUSTOMERS.find((c) => c.account_number === a);
+const prodByCode = (c) => PRODUCTS.find((p) => p.code === c);
 
-    // Products — merge with Prices by code
-    PRODUCTS = prodRows.map(p=>{
-      const pr = priceRows.find(x=>x.code===p.code) || {};
-      return {
-        code:p.code, name:p.name, short:p.shorthand||'',
-        retail:Number(pr.retail_price)||0, wholesale:Number(pr.wholesale_price)||0,
-        prices:pr  // store full price row for tier lookups
-      };
-    });
+async function loadData() {
+  const [products, prices, customers, orders, lines, overrides, bands] = await Promise.all([
+    sbGet('Products?select=*'),
+    sbGet('Prices?select=*'),
+    sbGet('Customers?select=*'),
+    sbGet('Orders?select=*'),
+    sbGet('order_lines?select=*'),
+    sbGet('customer_overrides?select=*').catch(() => []),
+    sbGet('price_band_map?select=*').catch(() => []),
+  ]);
 
-    // Store all price tier column names (everything except code, retail_price, wholesale_price)
-    if(priceRows.length > 0){
-      const skip = ['code','retail_price','wholesale_price'];
-      PRICE_TIERS = Object.keys(priceRows[0]).filter(k=>!skip.includes(k));
+  const priceByCode = {};
+  (prices || []).forEach((r) => { priceByCode[r.code] = r; });
+
+  const preferred = ['retail_price', 'wholesale_price', 'wholesale_price_1', 'wholesale_price_2'];
+  const cols = prices && prices.length ? Object.keys(prices[0]).filter((k) => k !== 'code') : preferred.slice();
+  PRICE_TIERS = preferred.filter((c) => cols.includes(c))
+    .concat(cols.filter((c) => !preferred.includes(c)).sort((a, b) => a.localeCompare(b)));
+
+  PRODUCTS = (products || []).map((p) => ({
+    code: p.code, name: p.name || '', shorthand: p.shorthand || '',
+    prices: priceByCode[p.code] || { code: p.code },
+  })).sort((a, b) => a.name.localeCompare(b.name));
+
+  CUSTOMERS = (customers || []).sort((a, b) => String(a.account_name || '').localeCompare(String(b.account_name || '')));
+
+  const linesByOrder = {};
+  (lines || []).forEach((l) => { (linesByOrder[l.OrderId] = linesByOrder[l.OrderId] || []).push(l); });
+  ORDERS = (orders || []).map((o) => Object.assign({}, o, { lines: linesByOrder[o.id] || [] }));
+
+  OVERRIDES = overrides || [];
+  BAND_MAP = (bands || []).sort((a, b) => (a.band_id || 0) - (b.band_id || 0));
+
+  const set = new Set(CONFIG.ROUTES);
+  CUSTOMERS.forEach((c) => { if (c.Route) set.add(c.Route); });
+  ORDERS.forEach((o) => { if (o.Route) set.add(o.Route); });
+  ROUTES = Array.from(set);
+
+  fillRouteSelects();
+  updateBadges();
+}
+
+function fillRouteSelects() {
+  const opts = ROUTES.map((r) => '<option>' + esc(r) + '</option>').join('');
+  $('routeSel').innerHTML = opts;
+  $('cmRoute').innerHTML = '<option value="">— none —</option>' + opts;
+  $('logRoute').innerHTML = '<option value="">All routes</option>' + opts;
+  $('cmBand').innerHTML = '<option value="">— none —</option>' + PRICE_TIERS.map((t) => '<option>' + esc(t) + '</option>').join('');
+}
+
+function updateBadges() {
+  const today = dISO();
+  const n = ORDERS.filter((o) => dOnly(o.DeliveryDate) === today).length;
+  const b = $('routesBadge');
+  b.textContent = n;
+  b.style.display = n ? '' : 'none';
+}
+
+/* ───────────────────────────── pricing ──────────────────────────────────── */
+function priceFor(code, cust, orderType) {
+  const p = prodByCode(code);
+  const row = p ? p.prices : {};
+  if (orderType !== 'Custom') {
+    return num(row[TYPE_TO_COL[orderType]]);
+  }
+  if (cust) {
+    const ov = OVERRIDES.find((o) => o.account_number === cust.account_number && o.product_code === code);
+    if (ov) return num(ov.price);
+    if (cust.price_band && row[cust.price_band] !== undefined && row[cust.price_band] !== null && row[cust.price_band] !== '') {
+      return num(row[cust.price_band]);
     }
-
-    // Customers
-    // NOTE: AccountNumber/AccountName/PriceTier were renamed in Supabase to
-    // "SLCustomerAccounts.CustomerAccountNumber", "SLCustomerAccounts.CustomerAccountName",
-    // and "PriceBands.Name" (literal dots in the column names, to mirror Sage's own naming).
-    // Sorted client-side rather than via ?order=, since a literal dot in a PostgREST
-    // order/filter parameter is interpreted as an embedded-table reference, not a
-    // literal character — sorting here avoids that ambiguity entirely.
-    CUSTOMERS = custRows.map(c=>({
-      accountNumber:c['SLCustomerAccounts.CustomerAccountNumber'], name:c['SLCustomerAccounts.CustomerAccountName'],
-      tier:c['PriceBands.Name']||'', defaultRoute:c.Route||'', notes:c.Notes||'',
-      fallbackPrice:c.fallback_price||''
-    })).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
-
-    // Customer-specific price overrides (account + product code -> fixed price)
-    CUSTOMER_OVERRIDES = overrideRows.map(o=>({
-      accountNumber:o.AccountNumber, productCode:o.ProductCode, price:Number(o.Price)
-    }));
-
-    // Orders + lines
-    savedOrders = orderRows.map(o=>{
-      const oLines = orderLineRows.filter(l=>Number(l.OrderId)===Number(o.id)).map(l=>{
-        const prod = PRODUCTS.find(p=>p.code===l.ProductCode);
-        return {
-          productCode:l.ProductCode, productName:prod?prod.name:l.ProductCode,
-          qty:Number(l.Qty), price:Number(l.Price)
-        };
-      });
-      return {
-        dbId:Number(o.id), cust:o.AccountNumber, type:o.OrderType||'retail_price',
-        driver:o.Route, delDate:(o.DeliveryDate||'').slice(0,10), total:Number(o.Total),
-        items:oLines.reduce((a,l)=>a+l.qty,0),
-        deliveryNotes:o.DeliveryNotes||'', picked:!!o.Picked, lines:oLines
-      };
-    });
-
-    // Resolve customer names for display
-    savedOrders.forEach(o=>{
-      const c = CUSTOMERS.find(x=>x.accountNumber===o.cust);
-      o.custName = c ? c.name : o.cust;
-      o.custTier = c ? c.tier : '';
-    });
-
-    // Rebuild picked state from the database so ticks survive refresh
-    pickedState = {}; deliveredRoutes = {};
-    savedOrders.forEach(o=>{
-      if(o.picked){
-        const rk = o.delDate+'||'+o.driver;
-        if(!pickedState[rk]) pickedState[rk]={};
-        pickedState[rk][o.custName]=true;
-      }
-    });
-    showSaveStatus('Loaded');
-  } catch(e){
-    console.error(e);
-    showSaveStatus('Could not load — check connection', true);
-    PRODUCTS = JSON.parse(JSON.stringify(DEFAULT_PRODUCTS));
-    CUSTOMERS = [];
-    CUSTOMER_OVERRIDES = [];
+    const fb = String(cust.fallback_price || '').toLowerCase();
+    if (fb.indexOf('ret') !== -1) return num(row.retail_price);
   }
+  return num(row.wholesale_price);
 }
 
-// ── SAVE HELPERS ─────────────────────────────────────────────────────────────
-async function saveProductToDb(p){
-  try{
-    await sbUpsert('Products', [{code:p.code, name:p.name, shorthand:p.short}]);
-    showSaveStatus('Saved');
-  }catch(e){console.error(e);showSaveStatus('Save failed',true);}
+/* ───────────────────────────── tabs ─────────────────────────────────────── */
+const TABS = ['entry', 'routes', 'log', 'products', 'customers', 'sage'];
+function switchTab(name) {
+  TABS.forEach((t) => { $('tab-' + t).style.display = t === name ? '' : 'none'; });
+  document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
+  if (name === 'routes') renderRoutes();
+  if (name === 'log') renderLog();
+  if (name === 'products') renderProducts();
+  if (name === 'customers') renderCustomers();
+  if (name === 'sage') { refreshSageStatus(); renderBandMap(); loadSyncLog(); }
 }
-async function savePriceToDb(code, field, value){
-  try{
-    const body = {code};
-    body[field] = value===''||value===null ? null : parseFloat(value)||0;
-    await sbUpsert('Prices', [body]);
-    showSaveStatus('Saved');
-  }catch(e){console.error(e);showSaveStatus('Save failed',true);}
-}
-async function deleteProductFromDb(code){
-  try{
-    await sbDelete('Products', `?code=eq.${encodeURIComponent(code)}`);
-    await sbDelete('Prices', `?code=eq.${encodeURIComponent(code)}`);
-    showSaveStatus('Saved');
-  }catch(e){console.error(e);showSaveStatus('Delete failed',true);}
-}
-async function saveCustomerToDb(c){
-  try{
-    await sbUpsert('Customers', [{
-      'SLCustomerAccounts.CustomerAccountNumber':c.accountNumber, 'SLCustomerAccounts.CustomerAccountName':c.name,
-      'PriceBands.Name':c.tier||null, Route:c.defaultRoute||null, Notes:c.notes||null,
-      fallback_price:c.fallbackPrice||null
-    }]);
-    showSaveStatus('Saved');
-  }catch(e){console.error(e);showSaveStatus('Save failed',true);}
-}
-async function deleteCustomerFromDb(accountNumber){
-  try{
-    // Column name contains a literal dot, so it must be double-quoted (URL-encoded as %22)
-    // in the filter — otherwise PostgREST reads the dot as an embedded-table reference.
-    await sbDelete('Customers', `?%22SLCustomerAccounts.CustomerAccountNumber%22=eq.${encodeURIComponent(accountNumber)}`);
-    showSaveStatus('Saved');
-  }catch(e){console.error(e);showSaveStatus('Delete failed',true);}
-}
-async function saveOrderToDb(order){
-  try{
-    const cust = CUSTOMERS.find(x=>x.name===order.custName||x.accountNumber===order.cust);
-    const accNum = cust ? cust.accountNumber : order.cust;
-    const rows = await sbInsert('Orders', [{
-      AccountNumber:accNum, Route:order.driver, DeliveryDate:order.delDate,
-      Total:order.total, DeliveryNotes:order.deliveryNotes||'',
-      OrderType:order.type
-    }]);
-    const dbId = rows[0].id;
-    order.dbId = dbId;
-    const lineRows = order.lines.map(l=>({
-      OrderId:dbId, ProductCode:l.productCode,
-      Qty:l.qty, Price:l.price
-    }));
-    if(lineRows.length) await sbInsert('order_lines', lineRows);
-    showSaveStatus('Saved');
-  }catch(e){console.error(e);showSaveStatus('Save failed',true);}
-}
-async function updateOrderInDb(order){
-  try{
-    const cust = CUSTOMERS.find(x=>x.name===order.custName||x.accountNumber===order.cust);
-    const accNum = cust ? cust.accountNumber : order.cust;
-    await sbUpdate('Orders', `?id=eq.${order.dbId}`, {
-      AccountNumber:accNum, Route:order.driver, DeliveryDate:order.delDate,
-      Total:order.total, DeliveryNotes:order.deliveryNotes||'',
-      OrderType:order.type
-    });
-    await sbDelete('order_lines', `?OrderId=eq.${order.dbId}`);
-    const lineRows = order.lines.map(l=>({
-      OrderId:order.dbId, ProductCode:l.productCode,
-      Qty:l.qty, Price:l.price
-    }));
-    if(lineRows.length) await sbInsert('order_lines', lineRows);
-    showSaveStatus('Saved');
-  }catch(e){console.error(e);showSaveStatus('Save failed',true);}
-}
-async function deleteOrderFromDb(dbId){
-  try{ await sbDelete('Orders', `?id=eq.${dbId}`); showSaveStatus('Saved'); }
-  catch(e){console.error(e);showSaveStatus('Delete failed',true);}
-}
+$('tabs').addEventListener('click', (e) => {
+  const b = e.target.closest('.tab');
+  if (b) switchTab(b.dataset.tab);
+});
 
-function showSaveStatus(msg,err=false){
-  const el=document.getElementById('save-status');
-  if(!el)return;
-  el.innerHTML=`<i class="ti ti-${err?'cloud-off':'circle-check'}"></i> ${msg}`;
-  el.className='save-status'+(err?' disconnected':' saved');
-  if(!err) setTimeout(()=>{el.innerHTML='<i class="ti ti-cloud"></i> Connected';el.className='save-status connected';},2500);
-  else setTimeout(()=>{el.innerHTML='<i class="ti ti-cloud-off"></i> Disconnected';el.className='save-status disconnected';},2500);
-}
+/* ───────────────────────── generic search dropdown ──────────────────────── */
+function attachDropdown(inputEl, listEl, getItems, renderItem, onPick) {
+  let items = [], hl = -1;
 
-function exportBackup(){
-  const data={products:PRODUCTS,customers:CUSTOMERS,savedOrders,exportedAt:new Date().toISOString()};
-  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-  a.download=`warehouse_backup_${new Date().toISOString().slice(0,10)}.json`;a.click();
-}
+  function close() { listEl.classList.remove('open'); hl = -1; }
+  function open() { if (items.length) listEl.classList.add('open'); else close(); }
 
-function importBackup(e){
-  const file=e.target.files[0];if(!file)return;
-  const reader=new FileReader();
-  reader.onload=async ev=>{
-    try{
-      const d=JSON.parse(ev.target.result);
-      if(!d.products||!d.customers)throw new Error('Invalid backup file');
-      if(!confirm(`Restore backup from ${d.exportedAt?d.exportedAt.slice(0,10):'unknown date'}?\n\nThis will overwrite products and customers in the live database for everyone. Continue?`))return;
-      showSaveStatus('Restoring…');
-      // Push products (names/shorthands) and their full price rows
-      for(const p of d.products){
-        await sbUpsert('Products', [{code:p.code, name:p.name, shorthand:p.short||''}]);
-        if(p.prices&&Object.keys(p.prices).length){
-          await sbUpsert('Prices', [{...p.prices, code:p.code}]);
-        }
-      }
-      // Push customers
-      for(const c of d.customers) await saveCustomerToDb(c);
-      await loadData();
-      populateTypeDropdown();
-      populateCustDropdown();updateBadges();
-      alert('Backup restored successfully.');
-    } catch(err){console.error(err);alert('Could not restore backup: '+err.message);}
-  };
-  reader.readAsText(file);e.target.value='';
-}
-
-// ── PRICING LOGIC ─────────────────────────────────────────────────────────────
-// Order type is a column name in the Prices table (retail_price,
-// wholesale_price, or any tier column like "Harlequin"). Lookup order:
-//   1. A customer-specific override for this exact product (customer_overrides table)
-//   2. The chosen tier column for the product, if the product has a price set for it
-//   3. The customer's configured fallback price tier (Customers.fallback_price)
-//   4. retail_price, as the last resort
-function findOverride(code,custName){
-  if(!custName)return null;
-  const cust=getCust(custName);
-  if(!cust.accountNumber)return null;
-  return CUSTOMER_OVERRIDES.find(o=>o.accountNumber===cust.accountNumber&&o.productCode===code)||null;
-}
-function getPrice(code,type,custName){
-  const p=PRODUCTS.find(x=>x.code===code);if(!p)return 0;
-  const ov=findOverride(code,custName);
-  if(ov)return Number(ov.price);
-  if(type&&p.prices&&p.prices[type]!==undefined&&p.prices[type]!==null){
-    return Number(p.prices[type]);
+  function render() {
+    listEl.innerHTML = items.map((it, i) =>
+      '<div class="dd-item' + (i === hl ? ' hl' : '') + '" data-i="' + i + '">' + renderItem(it) + '</div>'
+    ).join('');
   }
-  const cust=custName?getCust(custName):null;
-  const fb=(cust&&cust.fallbackPrice)||'retail_price';
-  if(p.prices&&p.prices[fb]!==undefined&&p.prices[fb]!==null){
-    return Number(p.prices[fb]);
+  function update() {
+    const q = inputEl.value.trim().toLowerCase();
+    items = q ? getItems(q).slice(0, 30) : [];
+    hl = items.length ? 0 : -1;
+    render(); open();
   }
-  return Number(p.prices?.retail_price)||p.retail||0;
+
+  inputEl.addEventListener('input', update);
+  inputEl.addEventListener('focus', update);
+  inputEl.addEventListener('keydown', (e) => {
+    if (!listEl.classList.contains('open')) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); hl = Math.min(hl + 1, items.length - 1); render(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); hl = Math.max(hl - 1, 0); render(); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (hl >= 0) { onPick(items[hl]); close(); } }
+    else if (e.key === 'Escape') close();
+  });
+  listEl.addEventListener('mousedown', (e) => {
+    const d = e.target.closest('.dd-item');
+    if (d) { e.preventDefault(); onPick(items[+d.dataset.i]); close(); }
+  });
+  document.addEventListener('click', (e) => {
+    if (!inputEl.contains(e.target) && !listEl.contains(e.target)) close();
+  });
+  return { close };
 }
 
-function typeLabel(type){
-  if(type==='retail_price')return 'Retail';
-  if(type==='wholesale_price')return 'Wholesale';
-  return type||'Retail';
+function searchCustomers(q) {
+  const starts = [], contains = [];
+  CUSTOMERS.forEach((c) => {
+    const name = String(c.account_name || '').toLowerCase();
+    const acct = String(c.account_number || '').toLowerCase();
+    if (name.startsWith(q) || acct.startsWith(q)) starts.push(c);
+    else if (name.includes(q) || acct.includes(q)) contains.push(c);
+  });
+  return starts.concat(contains);
+}
+function searchProducts(q) {
+  const starts = [], contains = [];
+  PRODUCTS.forEach((p) => {
+    const hay = [p.code, p.name, p.shorthand].map((x) => String(x || '').toLowerCase());
+    if (hay.some((h) => h.startsWith(q))) starts.push(p);
+    else if (hay.some((h) => h.includes(q))) contains.push(p);
+  });
+  return starts.concat(contains);
 }
 
-function getPriceLabel(code,type,custName){
-  const p=PRODUCTS.find(x=>x.code===code);
-  if(findOverride(code,custName))return 'Override';
-  if(type&&p&&p.prices&&p.prices[type]!==undefined&&p.prices[type]!==null)return typeLabel(type);
-  const cust=custName?getCust(custName):null;
-  const fb=(cust&&cust.fallbackPrice)||'retail_price';
-  if(p&&p.prices&&p.prices[fb]!==undefined&&p.prices[fb]!==null)return typeLabel(fb);
-  return 'Retail';
+/* ═════════════════════════════ ORDER ENTRY ══════════════════════════════ */
+let currentCustomer = null;
+let currentLines = [];    // { code, name, shorthand, qty, price, manual }
+let editingOrderId = null;
+
+function renderCustPanel() {
+  const c = currentCustomer;
+  const panel = $('custPanel');
+  if (!c) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  panel.classList.toggle('on-hold', !!c.on_hold);
+  $('cpName').textContent = c.account_name || c.account_number;
+  $('cpHold').style.display = c.on_hold ? '' : 'none';
+  const meta = [];
+  meta.push('Acct ' + (c.account_number || '—'));
+  meta.push('Tier: ' + (c.price_band || 'fallback ' + (c.fallback_price || 'Wholesale')));
+  if (c.Route) meta.push('Route: ' + c.Route);
+  $('cpMeta').textContent = meta.join('  ·  ');
+  const addr = [c.address_1, c.address_2, c.address_3, c.city, c.postcode].filter(Boolean).join(', ');
+  const contact = [addr, c.phone].filter(Boolean).join('  ·  ');
+  $('cpContact').textContent = contact;
+  $('cpContact').style.display = contact ? '' : 'none';
+  $('cpBalance').textContent = (c.balance !== null && c.balance !== undefined) ? 'Balance: ' + money(c.balance) : '';
+  $('cpBalance').style.display = (c.balance !== null && c.balance !== undefined) ? '' : 'none';
 }
 
-function getShort(code){const p=PRODUCTS.find(x=>x.code===code);return p?.short||code;}
-function getCust(name){return CUSTOMERS.find(c=>c.name===name)||{name,accountNumber:'',tier:'',defaultRoute:'',notes:'',fallbackPrice:''};}
-
-// ── TAB SWITCHING ─────────────────────────────────────────────────────────────
-function switchTab(t){
-  ['entry','routes','log','products','customers'].forEach(n=>{document.getElementById('tab-'+n).style.display=n===t?'':'none';});
-  document.querySelectorAll('.tab').forEach((b,i)=>b.classList.toggle('active',['entry','routes','log','products','customers'][i]===t));
-  if(t==='routes')renderRouteTab();
-  if(t==='log')renderLog();
-  if(t==='products')renderProductManager();
-  if(t==='customers')renderCustomerManager();
+function selectCustomer(c) {
+  currentCustomer = c;
+  $('custSearch').value = (c.account_name || '') + '  (' + (c.account_number || '') + ')';
+  if (c.Route && !editingOrderId) $('routeSel').value = c.Route;
+  renderCustPanel();
+  repriceLines();
+  if (c.on_hold) toast(String(c.account_name || c.account_number) + ' is ON HOLD in Sage', true);
 }
 
-// ── CUSTOMER DROPDOWN ─────────────────────────────────────────────────────────
-function populateCustDropdown(){
-  // No longer a <select> — customer search is now type-to-search
+attachDropdown($('custSearch'), $('custResults'), searchCustomers, (c) => {
+  const hold = c.on_hold ? ' <span class="badge b-hold">HOLD</span>' : '';
+  const bal = (c.balance !== null && c.balance !== undefined) ? '<span>' + money(c.balance) + '</span>' : '';
+  return '<span class="dd-main">' + esc(c.account_name || '') + hold + '</span>' +
+         '<span class="dd-side"><span class="mono">' + esc(c.account_number || '') + '</span>' +
+         (c.Route ? '<span class="badge b-route">' + esc(c.Route) + '</span>' : '') + bal + '</span>';
+}, selectCustomer);
+
+attachDropdown($('prodSearch'), $('prodResults'), searchProducts, (p) => {
+  const price = currentCustomer || $('orderType').value !== 'Custom'
+    ? money(priceFor(p.code, currentCustomer, $('orderType').value)) : '';
+  return '<span class="dd-main">' + esc(p.name) + '</span>' +
+         '<span class="dd-side"><span class="mono">' + esc(p.code) + '</span><span>' + price + '</span></span>';
+}, (p) => { addLine(p); $('prodSearch').value = ''; $('prodSearch').focus(); });
+
+function addLine(p) {
+  const existing = currentLines.find((l) => l.code === p.code);
+  if (existing) { existing.qty += 1; renderLines(); return; }
+  currentLines.push({
+    code: p.code, name: p.name, shorthand: p.shorthand,
+    qty: 1,
+    price: priceFor(p.code, currentCustomer, $('orderType').value),
+    manual: false,
+  });
+  renderLines();
 }
 
-// ── CUSTOMER SEARCH (order entry) ─────────────────────────────────────────────
-let custDD=null,custDDHighlight=-1;
-
-function onCustInput(val){
-  closeCustDD();
-  if(!val.trim())return;
-  const m=CUSTOMERS.filter(c=>
-    c.name.toLowerCase().includes(val.toLowerCase())||
-    c.accountNumber.toLowerCase().includes(val.toLowerCase())
-  ).slice(0,12);
-  if(m.length)showCustDD(m,val);
+function repriceLines() {
+  currentLines.forEach((l) => {
+    if (!l.manual) l.price = priceFor(l.code, currentCustomer, $('orderType').value);
+  });
+  renderLines();
 }
-function onCustFocus(val){if(val&&val.trim())onCustInput(val);}
-function onCustBlur(){setTimeout(()=>closeCustDD(),150);}
+$('orderType').addEventListener('change', repriceLines);
 
-function showCustDD(matches,query){
-  closeCustDD();custDDHighlight=-1;
-  const inp=document.getElementById('cust-input');if(!inp)return;
-  const rect=inp.getBoundingClientRect();
-  const dd=document.createElement('div');dd.className='dropdown';dd.id='cust-dd';
-  dd.style.cssText=`top:${rect.bottom+window.scrollY+2}px;left:${rect.left+window.scrollX}px;width:${Math.max(rect.width,300)}px`;
-  const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  dd.innerHTML=matches.map((c,i)=>{
-    const hl=c.name.replace(new RegExp(`(${esc(query)})`,'gi'),'<strong>$1</strong>');
-    const tierBadge=c.tier?`<span style="font-size:10px;color:var(--text3);margin-left:4px">${c.tier}</span>`:'';
-    return `<div class="dd-item" onmousedown="selectCust('${c.name.replace(/'/g,"\\'")}')" onmouseover="custDDHighlight=${i};highlightCustDD()">
-      <div><div class="dd-name">${hl}${tierBadge}</div><div class="dd-meta">${c.accountNumber}${c.defaultRoute?' · '+c.defaultRoute:''}</div></div>
-    </div>`;
-  }).join('');
-  document.body.appendChild(dd);
-  custDD={dd,matches};
-}
-function highlightCustDD(){if(!custDD)return;custDD.dd.querySelectorAll('.dd-item').forEach((el,i)=>{el.classList.toggle('highlighted',i===custDDHighlight);if(i===custDDHighlight)el.scrollIntoView({block:'nearest'});});}
-function closeCustDD(){if(custDD?.dd)custDD.dd.remove();custDD=null;custDDHighlight=-1;}
-
-function selectCust(name){
-  closeCustDD();
-  document.getElementById('cust-input').value=name;
-  document.getElementById('cust-input').classList.add('filled');
-  document.getElementById('cust-select').value=name;
-  onCustChange();
-}
-
-function onCustKey(e){
-  if(!custDD){return;}
-  if(e.key==='ArrowDown'){e.preventDefault();custDDHighlight=Math.min(custDDHighlight+1,custDD.matches.length-1);highlightCustDD();}
-  else if(e.key==='ArrowUp'){e.preventDefault();custDDHighlight=Math.max(custDDHighlight-1,0);highlightCustDD();}
-  else if(e.key==='Enter'||e.key==='Tab'){e.preventDefault();const idx=custDDHighlight>=0?custDDHighlight:0;if(custDD.matches[idx])selectCust(custDD.matches[idx].name);}
-  else if(e.key==='Escape')closeCustDD();
-}
-
-function populateTypeDropdown(){
-  const base='<option value="retail_price">Retail</option><option value="wholesale_price">Wholesale</option>';
-  const tierOpts=PRICE_TIERS.filter(t=>t!=='retail_price'&&t!=='wholesale_price').map(t=>`<option value="${t}">${t}</option>`).join('');
-  const sel=document.getElementById('type-select');
-  const editSel=document.getElementById('edit-type');
-  if(sel){sel.innerHTML=base+tierOpts;sel.value='retail_price';}
-  if(editSel){editSel.innerHTML=base+tierOpts;}
-}
-
-function onCustChange(){
-  const name=document.getElementById('cust-select').value;
-  const c=getCust(name);
-  const bar=document.getElementById('cust-info-bar');
-  const txt=document.getElementById('cust-info-text');
-  const parts=[];
-  if(c.notes)parts.push(c.notes);
-  if(c.tier)parts.push(`Price tier: ${typeLabel(c.tier)}`);
-  if(c.accountNumber)parts.push(`Account: ${c.accountNumber}`);
-  if(parts.length){bar.style.display='block';txt.textContent=parts.join(' · ');}
-  else bar.style.display='none';
-  if(c.defaultRoute){
-    const driverSel=document.getElementById('driver-select');
-    if(!driverSel.value) driverSel.value=c.defaultRoute;
-  }
-  // Auto-select the customer's price tier as the order type
-  const typeSel=document.getElementById('type-select');
-  if(c.tier&&typeSel.querySelector(`option[value="${CSS.escape(c.tier)}"]`)){
-    typeSel.value=c.tier;
+function renderLines() {
+  const tb = $('linesBody');
+  if (!currentLines.length) {
+    tb.innerHTML = '<tr><td colspan="6" class="empty">No lines yet</td></tr>';
   } else {
-    typeSel.value='retail_price';
+    tb.innerHTML = currentLines.map((l, i) =>
+      '<tr>' +
+      '<td class="mono">' + esc(l.code) + '</td>' +
+      '<td>' + esc(l.name) + '</td>' +
+      '<td class="t-right"><input type="number" min="0" step="1" class="qty-in num" data-i="' + i + '" data-k="qty" value="' + l.qty + '"></td>' +
+      '<td class="t-right"><input type="number" min="0" step="0.01" class="price-in num" tabindex="-1" data-i="' + i + '" data-k="price" value="' + num(l.price).toFixed(2) + '"></td>' +
+      '<td class="t-right num">' + money(l.qty * l.price) + '</td>' +
+      '<td class="t-right"><button class="btn btn-small btn-danger" data-del="' + i + '">✕</button></td>' +
+      '</tr>'
+    ).join('');
   }
-  refreshLinePrices();
+  const total = currentLines.reduce((s, l) => s + l.qty * l.price, 0);
+  const items = currentLines.reduce((s, l) => s + num(l.qty), 0);
+  $('orderTotal').textContent = money(total);
+  $('orderItems').textContent = items + ' item' + (items === 1 ? '' : 's');
 }
 
-// ── CUSTOMER SEARCH (edit modal) ──────────────────────────────────────────────
-let editCustDD=null,editCustDDHighlight=-1;
+$('linesBody').addEventListener('input', (e) => {
+  const el = e.target;
+  if (el.dataset.i === undefined) return;
+  const l = currentLines[+el.dataset.i];
+  if (!l) return;
+  if (el.dataset.k === 'qty') l.qty = Math.max(0, num(el.value));
+  if (el.dataset.k === 'price') { l.price = num(el.value); l.manual = true; }
+  const total = currentLines.reduce((s, x) => s + x.qty * x.price, 0);
+  const items = currentLines.reduce((s, x) => s + num(x.qty), 0);
+  $('orderTotal').textContent = money(total);
+  $('orderItems').textContent = items + ' item' + (items === 1 ? '' : 's');
+  const row = el.closest('tr');
+  if (row) row.children[4].textContent = money(l.qty * l.price);
+});
+$('linesBody').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-del]');
+  if (b) { currentLines.splice(+b.dataset.del, 1); renderLines(); }
+});
 
-function onEditCustInput(val){
-  closeEditCustDD();
-  if(!val.trim())return;
-  const m=CUSTOMERS.filter(c=>
-    c.name.toLowerCase().includes(val.toLowerCase())||
-    c.accountNumber.toLowerCase().includes(val.toLowerCase())
-  ).slice(0,12);
-  if(m.length)showEditCustDD(m,val);
-}
-function onEditCustFocus(val){if(val&&val.trim())onEditCustInput(val);}
-function onEditCustBlur(){setTimeout(()=>closeEditCustDD(),150);}
-
-function showEditCustDD(matches,query){
-  closeEditCustDD();editCustDDHighlight=-1;
-  const inp=document.getElementById('edit-cust-input');if(!inp)return;
-  const rect=inp.getBoundingClientRect();
-  const dd=document.createElement('div');dd.className='dropdown';dd.id='edit-cust-dd';
-  dd.style.cssText=`top:${rect.bottom+window.scrollY+2}px;left:${rect.left+window.scrollX}px;width:${Math.max(rect.width,300)}px`;
-  const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  dd.innerHTML=matches.map((c,i)=>{
-    const hl=c.name.replace(new RegExp(`(${esc(query)})`,'gi'),'<strong>$1</strong>');
-    return `<div class="dd-item" onmousedown="selectEditCust('${c.name.replace(/'/g,"\\'")}')" onmouseover="editCustDDHighlight=${i};highlightEditCustDD()">
-      <div><div class="dd-name">${hl}</div><div class="dd-meta">${c.accountNumber}</div></div>
-    </div>`;
-  }).join('');
-  document.body.appendChild(dd);
-  editCustDD={dd,matches};
-}
-function highlightEditCustDD(){if(!editCustDD)return;editCustDD.dd.querySelectorAll('.dd-item').forEach((el,i)=>{el.classList.toggle('highlighted',i===editCustDDHighlight);if(i===editCustDDHighlight)el.scrollIntoView({block:'nearest'});});}
-function closeEditCustDD(){if(editCustDD?.dd)editCustDD.dd.remove();editCustDD=null;editCustDDHighlight=-1;}
-function selectEditCust(name){
-  closeEditCustDD();
-  document.getElementById('edit-cust-input').value=name;
-  document.getElementById('edit-cust-input').classList.add('filled');
-  document.getElementById('edit-cust').value=name;
-}
-function onEditCustKey(e){
-  if(!editCustDD)return;
-  if(e.key==='ArrowDown'){e.preventDefault();editCustDDHighlight=Math.min(editCustDDHighlight+1,editCustDD.matches.length-1);highlightEditCustDD();}
-  else if(e.key==='ArrowUp'){e.preventDefault();editCustDDHighlight=Math.max(editCustDDHighlight-1,0);highlightEditCustDD();}
-  else if(e.key==='Enter'||e.key==='Tab'){e.preventDefault();const idx=editCustDDHighlight>=0?editCustDDHighlight:0;if(editCustDD.matches[idx])selectEditCust(editCustDD.matches[idx].name);}
-  else if(e.key==='Escape')closeEditCustDD();
-}
-
-function onTypeChange(){refreshLinePrices();}
-
-function refreshLinePrices(){
-  const type=document.getElementById('type-select').value;
-  const cust=document.getElementById('cust-select').value;
-  lines.forEach(l=>{if(l.productCode)l.price=getPrice(l.productCode,type,cust);});
+function resetOrderForm() {
+  currentCustomer = null;
+  currentLines = [];
+  editingOrderId = null;
+  $('custSearch').value = '';
+  $('orderNotes').value = '';
+  $('orderType').value = 'Custom';
+  $('delDate').value = dISO(new Date(Date.now() + 86400000)); // tomorrow
+  $('editBanner').style.display = 'none';
+  renderCustPanel();
   renderLines();
 }
+$('clearOrderBtn').addEventListener('click', resetOrderForm);
+$('cancelEditBtn').addEventListener('click', resetOrderForm);
 
-// ── ORDER ENTRY ───────────────────────────────────────────────────────────────
-function addLine(focusIt=true){
-  const id=++lineIdCounter;
-  lines.push({id,productCode:'',productName:'',qty:1,price:0});
+$('saveOrderBtn').addEventListener('click', async () => {
+  if (!currentCustomer) { toast('Choose a customer first', true); return; }
+  const lines = currentLines.filter((l) => l.qty > 0);
+  if (!lines.length) { toast('Add at least one line', true); return; }
+  const order = {
+    AccountNumber: currentCustomer.account_number,
+    Route: $('routeSel').value,
+    DeliveryDate: $('delDate').value || dISO(),
+    Total: lines.reduce((s, l) => s + l.qty * l.price, 0),
+    DeliveryNotes: $('orderNotes').value,
+    OrderType: $('orderType').value,
+  };
+  loading(true, editingOrderId ? 'Updating order…' : 'Saving order…');
+  try {
+    let orderId = editingOrderId;
+    if (editingOrderId) {
+      await sbPatch('Orders?id=eq.' + editingOrderId, order);
+      await sbDelete('order_lines?OrderId=eq.' + editingOrderId);
+    } else {
+      order.CreatedAt = new Date().toISOString();
+      order.Picked = false;
+      const rows = await sbPost('Orders', [order], 'return=representation');
+      orderId = rows[0].id;
+    }
+    await sbPost('order_lines', lines.map((l) => ({
+      OrderId: orderId, ProductCode: l.code, ProductName: l.name, Qty: l.qty, Price: l.price,
+    })), 'return=minimal');
+    toast(editingOrderId ? 'Order updated' : 'Order saved');
+    resetOrderForm();
+    await loadData();
+  } catch (err) {
+    toast(err.message, true);
+  } finally { loading(false); }
+});
+
+function beginEditOrder(o) {
+  const c = custByAcct(o.AccountNumber);
+  editingOrderId = o.id;
+  currentCustomer = c || { account_number: o.AccountNumber, account_name: o.AccountNumber };
+  $('custSearch').value = (currentCustomer.account_name || '') + '  (' + o.AccountNumber + ')';
+  $('orderType').value = o.OrderType || 'Custom';
+  $('delDate').value = dOnly(o.DeliveryDate);
+  $('routeSel').value = o.Route || ROUTES[0];
+  $('orderNotes').value = o.DeliveryNotes || '';
+  currentLines = (o.lines || []).map((l) => ({
+    code: l.ProductCode,
+    name: l.ProductName || (prodByCode(l.ProductCode) || {}).name || l.ProductCode,
+    shorthand: (prodByCode(l.ProductCode) || {}).shorthand || '',
+    qty: num(l.Qty), price: num(l.Price), manual: true,
+  }));
+  $('editBannerText').textContent = 'Editing order for ' + (currentCustomer.account_name || o.AccountNumber) + ' — ' + dNice(o.DeliveryDate);
+  $('editBanner').style.display = '';
+  renderCustPanel();
   renderLines();
-  if(focusIt)setTimeout(()=>{const i=document.getElementById('pi-'+id);if(i)i.focus();},30);
-}
-function removeLine(id){lines=lines.filter(l=>l.id!==id);renderLines();}
-
-function renderLines(){
-  const c=document.getElementById('lines-container');
-  if(!lines.length){c.innerHTML='<div class="no-items">No lines yet — search a product to start</div>';updateTotals();updateLineCount();return;}
-  c.innerHTML=lines.map((l,i)=>lineHTML(l,i+1)).join('');
-  updateTotals();updateLineCount();
+  switchTab('entry');
+  window.scrollTo({ top: 0 });
 }
 
-function lineHTML(l,num){
-  const total=(l.qty&&l.price)?'£'+(l.qty*l.price).toFixed(2):'—';
-  return `<div class="line-row" id="row-${l.id}">
-    <span class="line-num">${num}</span>
-    <div class="product-wrap" id="wrap-${l.id}">
-      <input class="product-input${l.productCode?' filled':''}" id="pi-${l.id}" value="${l.productName||''}" placeholder="Search product…" autocomplete="off"
-        oninput="onProductInput(${l.id},this.value)" onkeydown="onProductKey(event,${l.id})"
-        onblur="onProductBlur(${l.id})" onfocus="onProductFocus(${l.id},this.value)"/>
-    </div>
-    <input class="qty-input" id="qi-${l.id}" type="number" min="0.5" step="1" value="${l.qty}"
-      oninput="onQtyInput(${l.id},this.value)"
-      onblur="onQtyBlur(${l.id},this.value)"
-      onkeydown="onQtyKey(event,${l.id})"/>
-    <input class="price-input" id="pc-${l.id}" type="number" min="0" step="0.01" tabindex="-1" title="Override price for this order only"
-      value="${l.price>0?l.price.toFixed(2):''}" placeholder="£0.00"
-      oninput="onPriceInput(${l.id},this.value)" onblur="onPriceBlur(${l.id},this.value)"/>
-    <span class="total-cell" id="tc-${l.id}">${total}</span>
-    <button class="del-btn" onclick="removeLine(${l.id})"><i class="ti ti-x"></i></button>
-  </div>`;
-}
-function onPriceInput(id,val){
-  const l=lines.find(x=>x.id===id);if(!l)return;
-  const v=parseFloat(val);
-  l.price=(v>=0&&!isNaN(v))?v:0;
-  const tc=document.getElementById('tc-'+id);
-  if(tc)tc.textContent=(l.qty&&l.price)?'£'+(l.qty*l.price).toFixed(2):'—';
-  updateTotals();
-}
-function onPriceBlur(id,val){
-  const l=lines.find(x=>x.id===id);
-  const inp=document.getElementById('pc-'+id);
-  if(l&&inp)inp.value=l.price>0?l.price.toFixed(2):'';
-}
+/* ═════════════════════════════ ROUTES ═══════════════════════════════════ */
+function renderRoutes() {
+  if (!$('routeDate').value) $('routeDate').value = dISO();
+  const date = $('routeDate').value;
+  const board = $('routeBoard');
+  const todays = ORDERS.filter((o) => dOnly(o.DeliveryDate) === date);
 
-function onProductInput(id,val){
-  closeDropdown();
-  if(!val.trim()){const l=lines.find(x=>x.id===id);if(l){l.productCode='';l.productName='';l.price=0;}updateTotals();return;}
-  const words=val.toLowerCase().split(/\s+/).filter(Boolean);
-  const m=PRODUCTS.filter(p=>{
-    const hay=(p.name+' '+p.code+' '+(p.short||'')).toLowerCase();
-    return words.every(w=>hay.includes(w));
-  }).slice(0,12);
-  if(m.length)showDropdown(id,m,val);
-}
-function onProductFocus(id,val){if(val&&val.trim())onProductInput(id,val);}
-
-function showDropdown(id,matches,query){
-  closeDropdown();ddHighlight=-1;
-  const inp=document.getElementById('pi-'+id);if(!inp)return;
-  const rect=inp.getBoundingClientRect();
-  const type=document.getElementById('type-select').value;
-  const cust=document.getElementById('cust-select').value;
-  const dd=document.createElement('div');dd.className='dropdown';dd.id='dd-active';
-  dd.style.cssText=`top:${rect.bottom+window.scrollY+2}px;left:${rect.left+window.scrollX}px;width:${Math.max(rect.width,340)}px`;
-  const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  dd.innerHTML=matches.map((p,i)=>{
-    const pr=getPrice(p.code,type,cust);
-    const lbl=getPriceLabel(p.code,type,cust);
-    const hl=p.name.replace(new RegExp(`(${esc(query)})`,'gi'),'<strong>$1</strong>');
-    const shortBadge=p.short?`<span class="dd-short">${p.short}</span>`:'';
-    const lblBadge=`<span style="font-size:10px;color:var(--text3);margin-left:4px">${lbl}</span>`;
-    return `<div class="dd-item" onmousedown="selectProduct(${id},'${p.code}',${JSON.stringify(p.name)})" onmouseover="highlightDD(${i})">
-      <div><div class="dd-name">${hl}${shortBadge}${lblBadge}</div><div class="dd-meta">${p.code}</div></div>
-      <div class="dd-price">£${pr.toFixed(2)}</div></div>`;
-  }).join('');
-  document.body.appendChild(dd);activeDD={id,dd,matches};
-}
-function highlightDD(idx){ddHighlight=idx;if(!activeDD)return;activeDD.dd.querySelectorAll('.dd-item').forEach((el,i)=>{el.classList.toggle('highlighted',i===idx);if(i===idx)el.scrollIntoView({block:'nearest'});});}
-function closeDropdown(){if(activeDD?.dd)activeDD.dd.remove();activeDD=null;ddHighlight=-1;}
-
-function selectProduct(lineId,code,name){
-  const type=document.getElementById('type-select').value,cust=document.getElementById('cust-select').value;
-  const pr=getPrice(code,type,cust);
-  const l=lines.find(x=>x.id===lineId);
-  if(l){l.productCode=code;l.productName=name;l.price=pr;}
-  closeDropdown();
-  const inp=document.getElementById('pi-'+lineId);
-  if(inp){inp.value=name;inp.classList.add('filled');}
-  document.getElementById('pc-'+lineId).value=pr>0?pr.toFixed(2):'';
-  updateTotals();
-  setTimeout(()=>{const qi=document.getElementById('qi-'+lineId);if(qi){qi.focus();qi.select();}},30);
-}
-function onProductBlur(id){setTimeout(()=>closeDropdown(),150);}
-function onProductKey(e,id){
-  if(!activeDD){if(e.key==='Enter'||e.key==='Tab'){e.preventDefault();maybeAddNext(id);}return;}
-  if(e.key==='ArrowDown'){e.preventDefault();ddHighlight=Math.min(ddHighlight+1,activeDD.matches.length-1);highlightDD(ddHighlight);}
-  else if(e.key==='ArrowUp'){e.preventDefault();ddHighlight=Math.max(ddHighlight-1,0);highlightDD(ddHighlight);}
-  else if(e.key==='Enter'||e.key==='Tab'){e.preventDefault();const idx=ddHighlight>=0?ddHighlight:0;if(activeDD.matches[idx])selectProduct(id,activeDD.matches[idx].code,activeDD.matches[idx].name);}
-  else if(e.key==='Escape')closeDropdown();
-}
-function onQtyInput(id,val){
-  // Update live without resetting to 1 — just store and refresh total
-  const l=lines.find(x=>x.id===id);
-  const v=parseFloat(val);
-  if(l&&v>0){l.qty=v;const tc=document.getElementById('tc-'+id);if(tc)tc.textContent=l.price?'£'+(v*l.price).toFixed(2):'—';updateTotals();}
-}
-function onQtyBlur(id,val){
-  const inp=document.getElementById('qi-'+id);
-  const v=!val||isNaN(val)||parseFloat(val)<=0?1:parseFloat(val);
-  const l=lines.find(x=>x.id===id);
-  if(l)l.qty=v;
-  if(inp)inp.value=v;
-  const tc=document.getElementById('tc-'+id);
-  if(tc&&l)tc.textContent=l.price?'£'+(v*l.price).toFixed(2):'—';
-  updateTotals();
-}
-function onQtyKey(e,id){
-  if(e.key==='Enter'||e.key==='Tab'){
-    e.preventDefault();
-    const inp=document.getElementById('qi-'+id);
-    if(inp)onQtyBlur(id,inp.value);
-    maybeAddNext(id);
+  if (!todays.length) {
+    board.innerHTML = '<div class="empty">No orders for ' + esc(dNice(date)) + '</div>';
+    return;
   }
-}
-function maybeAddNext(id){
-  const idx=lines.findIndex(l=>l.id===id);
-  if(idx===lines.length-1)addLine(true);
-  else{const nxt=document.getElementById('pi-'+lines[idx+1].id);if(nxt)nxt.focus();}
-}
-function updateTotals(){
-  let total=0,items=0;
-  lines.forEach(l=>{if(l.productCode&&l.price){total+=l.qty*l.price;items+=l.qty;}});
-  document.getElementById('order-total').textContent='£'+total.toFixed(2);
-  document.getElementById('total-items').textContent=items;
-}
-function updateLineCount(){const el=document.getElementById('line-count');if(el)el.textContent=lines.length?`(${lines.length} line${lines.length>1?'s':''})`:'';}
+  const byRoute = {};
+  todays.forEach((o) => { (byRoute[o.Route || 'Unassigned'] = byRoute[o.Route || 'Unassigned'] || []).push(o); });
 
-function clearOrder(){
-  lines=[];lineIdCounter=0;
-  document.getElementById('cust-input').value='';
-  document.getElementById('cust-input').classList.remove('filled');
-  document.getElementById('cust-select').value='';
-  document.getElementById('driver-select').value='';
-  document.getElementById('type-select').value='retail_price';
-  document.getElementById('cust-info-bar').style.display='none';
-  document.getElementById('del-notes').value='';
-  setDefaultDate();renderLines();
+  const routeNames = ROUTES.filter((r) => byRoute[r]).concat(Object.keys(byRoute).filter((r) => !ROUTES.includes(r)));
+
+  board.innerHTML = routeNames.map((r) => {
+    const orders = byRoute[r].slice().sort((a, b) => {
+      const an = (custByAcct(a.AccountNumber) || {}).account_name || a.AccountNumber;
+      const bn = (custByAcct(b.AccountNumber) || {}).account_name || b.AccountNumber;
+      return String(an).localeCompare(String(bn));
+    });
+    const allPicked = orders.every((o) => o.Picked);
+    const total = orders.reduce((s, o) => s + num(o.Total), 0);
+    return '<div class="route-card' + (allPicked ? ' done' : '') + '" data-route="' + esc(r) + '">' +
+      '<div class="rc-head"><span class="rc-driver">' + esc(r) + '</span>' +
+      '<span class="rc-count">' + orders.length + ' order' + (orders.length === 1 ? '' : 's') + ' · ' + money(total) + '</span></div>' +
+      '<div class="rc-orders">' +
+      orders.map((o) => {
+        const c = custByAcct(o.AccountNumber);
+        return '<div class="rc-order' + (o.Picked ? ' picked' : '') + '">' +
+          '<input type="checkbox" data-pick="' + o.id + '"' + (o.Picked ? ' checked' : '') + ' title="Picked">' +
+          '<span class="who">' + esc((c && c.account_name) || o.AccountNumber) + '</span>' +
+          '<span class="amt">' + money(o.Total) + '</span>' +
+          '</div>';
+      }).join('') +
+      '</div>' +
+      '<div class="rc-foot">' +
+      '<button class="btn btn-small" data-pl="' + esc(r) + '">Pick list</button>' +
+      '<button class="btn btn-small" data-dn="' + esc(r) + '">Delivery notes</button>' +
+      '<button class="btn btn-small btn-danger" data-done="' + esc(r) + '">Mark delivered</button>' +
+      '</div></div>';
+  }).join('');
+}
+$('routeDate').addEventListener('change', () => renderRoutes());
+
+$('routeBoard').addEventListener('change', async (e) => {
+  const cb = e.target.closest('[data-pick]');
+  if (!cb) return;
+  const id = +cb.dataset.pick;
+  try {
+    await sbPatch('Orders?id=eq.' + id, { Picked: cb.checked });
+    const o = ORDERS.find((x) => x.id === id);
+    if (o) o.Picked = cb.checked;
+    renderRoutes();
+    updateBadges();
+  } catch (err) { toast(err.message, true); cb.checked = !cb.checked; }
+});
+
+$('routeBoard').addEventListener('click', async (e) => {
+  const pl = e.target.closest('[data-pl]');
+  const dn = e.target.closest('[data-dn]');
+  const done = e.target.closest('[data-done]');
+  const date = $('routeDate').value;
+  const forRoute = (r) => ORDERS.filter((o) => dOnly(o.DeliveryDate) === date && (o.Route || 'Unassigned') === r);
+
+  if (pl) printPickList(pl.dataset.pl, date, forRoute(pl.dataset.pl));
+  if (dn) printDeliveryNotes(forRoute(dn.dataset.dn));
+  if (done) {
+    const r = done.dataset.done;
+    const orders = forRoute(r);
+    if (!confirm('Mark ' + r + "'s route as delivered?\n\nThis deletes " + orders.length + ' order(s) for ' + dNice(date) + ' from this system. Invoice history stays in Sage.')) return;
+    loading(true, 'Clearing route…');
+    try {
+      await sbDelete('Orders?Route=eq.' + encodeURIComponent(r) + '&DeliveryDate=eq.' + encodeURIComponent(date));
+      toast(r + "'s route cleared");
+      await loadData();
+      renderRoutes();
+    } catch (err) { toast(err.message, true); }
+    finally { loading(false); }
+  }
+});
+
+/* ───────────────────────────── printing ─────────────────────────────────── */
+function doPrint(html) {
+  const root = $('printRoot');
+  root.innerHTML = html;
+  document.body.classList.add('printing');
+  const cleanup = () => { document.body.classList.remove('printing'); root.innerHTML = ''; window.removeEventListener('afterprint', cleanup); };
+  window.addEventListener('afterprint', cleanup);
+  setTimeout(() => { window.print(); setTimeout(cleanup, 500); }, 60);
 }
 
-async function saveOrder(){
-  const custName=document.getElementById('cust-select').value,type=document.getElementById('type-select').value;
-  const driver=document.getElementById('driver-select').value,delDate=document.getElementById('del-date').value;
-  const filled=lines.filter(l=>l.productCode&&l.qty);
-  if(!custName){alert('Please select a customer.');return;}
-  if(!driver){alert('Please assign a route.');return;}
-  if(!delDate){alert('Please set a delivery date.');return;}
-  if(!filled.length){alert('Add at least one product line.');return;}
-  let total=0,items=0;filled.forEach(l=>{total+=l.qty*l.price;items+=l.qty;});
-  const custObj=getCust(custName);
-  const newOrder={
-    cust:custObj.accountNumber||custName, custName:custObj.name, type, driver, delDate,
-    lines:filled.map(l=>({...l})), total, items,
-    deliveryNotes:document.getElementById('del-notes').value||'', custTier:custObj.tier||''
-  };
-  savedOrders.push(newOrder);
-  await saveOrderToDb(newOrder);
-  updateBadges();
-  const b=document.getElementById('saved-banner');b.style.display='flex';
-  setTimeout(()=>{b.style.display='none';},2500);
-  clearOrder();
-}
-function updateBadges(){
-  document.getElementById('routes-badge').textContent=savedOrders.length;
-  document.getElementById('log-badge').textContent=savedOrders.length;
+function custAddressLines(c) {
+  if (!c) return [];
+  return [c.address_1, c.address_2, c.address_3, c.address_4, c.city, c.county, c.postcode]
+    .map((x) => String(x || '').trim()).filter(Boolean);
 }
 
-// ── PICKING ───────────────────────────────────────────────────────────────────
-async function togglePickCust(rk,cust){
-  if(!pickedState[rk])pickedState[rk]={};
-  const nowPicked=!pickedState[rk][cust];
-  pickedState[rk][cust]=nowPicked;
-  renderRouteInner();
-  // Persist to database — update every order for this customer on this route/day
-  const [day,route]=rk.split('||');
-  const matching=savedOrders.filter(o=>o.delDate===day&&o.driver===route&&(o.custName===cust||o.cust===cust));
-  for(const o of matching){
-    o.picked=nowPicked;
-    if(o.dbId){
-      try{
-        await sbUpdate('Orders', `?id=eq.${o.dbId}`, {Picked:nowPicked});
-      }catch(e){console.error(e);showSaveStatus('Save failed',true);}
+function printPickList(route, date, orders) {
+  if (!orders.length) { toast('No orders on this route', true); return; }
+  const sorted = orders.slice().sort((a, b) => {
+    const an = (custByAcct(a.AccountNumber) || {}).account_name || a.AccountNumber;
+    const bn = (custByAcct(b.AccountNumber) || {}).account_name || b.AccountNumber;
+    return String(an).localeCompare(String(bn));
+  });
+
+  const agg = {};
+  sorted.forEach((o) => (o.lines || []).forEach((l) => {
+    const key = l.ProductCode;
+    if (!agg[key]) agg[key] = { name: l.ProductName || key, short: (prodByCode(key) || {}).shorthand || '', qty: 0 };
+    agg[key].qty += num(l.Qty);
+  }));
+  const aggRows = Object.keys(agg).map((k) => agg[k]).sort((a, b) => a.name.localeCompare(b.name));
+
+  const html =
+    '<div class="p-doc">' +
+    '<div class="p-head"><div class="p-title">Pick list — ' + esc(route) + '</div>' +
+    '<div class="p-co"><div class="co-name">' + esc(CONFIG.COMPANY.name) + '</div>' + esc(dNice(date)) + '</div></div>' +
+    sorted.map((o) => {
+      const c = custByAcct(o.AccountNumber);
+      return '<div class="p-picksec">' +
+        '<div class="p-pickhead"><span>' + esc((c && c.account_name) || o.AccountNumber) + '</span><span class="mono">' + esc(o.AccountNumber) + '</span></div>' +
+        (o.DeliveryNotes ? '<div class="p-picknotes">' + esc(o.DeliveryNotes) + '</div>' : '') +
+        '<table class="p-tbl"><thead><tr><th style="width:70px" class="r">Qty</th><th>Product</th><th style="width:120px">Shorthand</th></tr></thead><tbody>' +
+        (o.lines || []).map((l) =>
+          '<tr><td class="r"><b>' + num(l.Qty) + '</b></td><td>' + esc(l.ProductName || l.ProductCode) + '</td><td>' + esc((prodByCode(l.ProductCode) || {}).shorthand || '') + '</td></tr>'
+        ).join('') +
+        '</tbody></table></div>';
+    }).join('') +
+    '<div class="p-agg-title">Route totals — ' + esc(route) + '</div>' +
+    '<table class="p-tbl"><thead><tr><th style="width:70px" class="r">Qty</th><th>Product</th><th style="width:120px">Shorthand</th></tr></thead><tbody>' +
+    aggRows.map((a) => '<tr><td class="r"><b>' + a.qty + '</b></td><td>' + esc(a.name) + '</td><td>' + esc(a.short) + '</td></tr>').join('') +
+    '</tbody></table>' +
+    '</div>';
+  doPrint(html);
+}
+
+function deliveryNoteHTML(o) {
+  const c = custByAcct(o.AccountNumber);
+  const addr = custAddressLines(c);
+  return '<div class="p-doc">' +
+    '<div class="p-head"><div class="p-title">Delivery note</div>' +
+    '<div class="p-co"><div class="co-name">' + esc(CONFIG.COMPANY.name) + '</div>' +
+    CONFIG.COMPANY.lines.map((l) => esc(l)).join('<br>') + '</div></div>' +
+
+    '<div class="p-meta">' +
+    '<div><b>Date</b>' + esc(dNice(o.DeliveryDate)) + '</div>' +
+    '<div><b>Route</b>' + esc(o.Route || '—') + '</div>' +
+    '<div><b>Account</b><span class="mono">' + esc(o.AccountNumber) + '</span></div>' +
+    '<div><b>Order type</b>' + esc(o.OrderType || 'Custom') + '</div>' +
+    '</div>' +
+
+    '<div class="p-addr"><b>Deliver to</b>' +
+    esc((c && c.account_name) || o.AccountNumber) +
+    (addr.length ? '<br>' + addr.map(esc).join('<br>') : '') +
+    ((c && c.phone) ? '<br>Tel: ' + esc(c.phone) : '') +
+    '</div>' +
+
+    '<table class="p-tbl"><thead><tr><th style="width:70px" class="r">Qty</th><th>Product</th><th style="width:90px" class="r">Unit £</th><th style="width:90px" class="r">Total £</th></tr></thead><tbody>' +
+    (o.lines || []).map((l) =>
+      '<tr><td class="r">' + num(l.Qty) + '</td><td>' + esc(l.ProductName || l.ProductCode) + '</td>' +
+      '<td class="r">' + num(l.Price).toFixed(2) + '</td><td class="r">' + (num(l.Qty) * num(l.Price)).toFixed(2) + '</td></tr>'
+    ).join('') +
+    '</tbody></table>' +
+
+    '<div class="p-total"><span>Total</span><span>' + money(o.Total) + '</span></div>' +
+    (o.DeliveryNotes ? '<div class="p-notes"><b>Notes</b><br>' + esc(o.DeliveryNotes) + '</div>' : '') +
+    '<div class="p-sign">' +
+    '<div class="slot"><div class="rule"></div>Received by (print &amp; sign)</div>' +
+    '<div class="slot"><div class="rule"></div>Cash received £</div>' +
+    '</div>' +
+    '</div>';
+}
+
+function printDeliveryNotes(orders) {
+  if (!orders.length) { toast('No orders on this route', true); return; }
+  const sorted = orders.slice().sort((a, b) => {
+    const an = (custByAcct(a.AccountNumber) || {}).account_name || a.AccountNumber;
+    const bn = (custByAcct(b.AccountNumber) || {}).account_name || b.AccountNumber;
+    return String(an).localeCompare(String(bn));
+  });
+  doPrint(sorted.map(deliveryNoteHTML).join(''));
+}
+
+/* ═════════════════════════════ ORDER LOG ════════════════════════════════ */
+function renderLog() {
+  const q = $('logSearch').value.trim().toLowerCase();
+  const route = $('logRoute').value;
+  const type = $('logType').value;
+
+  let list = ORDERS.slice();
+  if (route) list = list.filter((o) => (o.Route || '') === route);
+  if (type) list = list.filter((o) => (o.OrderType || 'Custom') === type);
+  if (q) {
+    list = list.filter((o) => {
+      const c = custByAcct(o.AccountNumber);
+      return String(o.AccountNumber || '').toLowerCase().includes(q) ||
+             String((c && c.account_name) || '').toLowerCase().includes(q);
+    });
+  }
+  $('logCount').textContent = list.length + ' order' + (list.length === 1 ? '' : 's');
+
+  const byDay = {};
+  list.forEach((o) => { (byDay[dOnly(o.DeliveryDate)] = byDay[dOnly(o.DeliveryDate)] || []).push(o); });
+  const days = Object.keys(byDay).sort().reverse();
+
+  $('logList').innerHTML = !days.length ? '<div class="empty">No matching orders</div>' :
+    days.map((day) =>
+      '<div class="log-day">' + esc(dNice(day)) + '</div>' +
+      byDay[day].slice().sort((a, b) => String(a.Route || '').localeCompare(String(b.Route || ''))).map((o) => {
+        const c = custByAcct(o.AccountNumber);
+        return '<div class="log-item">' +
+          '<span class="who">' + esc((c && c.account_name) || o.AccountNumber) +
+          '<span class="acct">' + esc(o.AccountNumber) + '</span></span>' +
+          (o.Route ? '<span class="badge b-route">' + esc(o.Route) + '</span>' : '') +
+          '<span class="badge b-type">' + esc(o.OrderType || 'Custom') + '</span>' +
+          (o.Picked ? '<span class="badge b-new">picked</span>' : '') +
+          '<span class="amt">' + money(o.Total) + '</span>' +
+          '<button class="btn btn-small" data-lines="' + o.id + '">Lines</button>' +
+          '<button class="btn btn-small" data-edit="' + o.id + '">Edit</button>' +
+          '<button class="btn btn-small" data-print="' + o.id + '">Note</button>' +
+          '<button class="btn btn-small btn-danger" data-delete="' + o.id + '">✕</button>' +
+          '</div>' +
+          '<div class="log-lines" id="lines-' + o.id + '"><table>' +
+          (o.lines || []).map((l) =>
+            '<tr><td style="width:50px"><b>' + num(l.Qty) + '</b></td><td>' + esc(l.ProductName || l.ProductCode) + '</td>' +
+            '<td class="num" style="width:80px;text-align:right">' + money(num(l.Qty) * num(l.Price)) + '</td></tr>'
+          ).join('') +
+          (o.DeliveryNotes ? '<tr><td colspan="3" class="hint">' + esc(o.DeliveryNotes) + '</td></tr>' : '') +
+          '</table></div>';
+      }).join('')
+    ).join('');
+}
+['logSearch', 'logRoute', 'logType'].forEach((id) => {
+  $(id).addEventListener('input', renderLog);
+});
+
+$('logList').addEventListener('click', async (e) => {
+  const lines = e.target.closest('[data-lines]');
+  const edit = e.target.closest('[data-edit]');
+  const print = e.target.closest('[data-print]');
+  const del = e.target.closest('[data-delete]');
+
+  if (lines) $('lines-' + lines.dataset.lines).classList.toggle('open');
+  if (edit) { const o = ORDERS.find((x) => x.id === +edit.dataset.edit); if (o) beginEditOrder(o); }
+  if (print) { const o = ORDERS.find((x) => x.id === +print.dataset.print); if (o) doPrint(deliveryNoteHTML(o)); }
+  if (del) {
+    const o = ORDERS.find((x) => x.id === +del.dataset.delete);
+    if (!o) return;
+    const c = custByAcct(o.AccountNumber);
+    if (!confirm('Delete this order for ' + ((c && c.account_name) || o.AccountNumber) + '?')) return;
+    try {
+      await sbDelete('Orders?id=eq.' + o.id);
+      toast('Order deleted');
+      await loadData();
+      renderLog();
+    } catch (err) { toast(err.message, true); }
+  }
+});
+
+/* ═════════════════════════════ PRODUCTS ═════════════════════════════════ */
+$('addProductBtn').addEventListener('click', async () => {
+  const code = $('npCode').value.trim();
+  const name = $('npName').value.trim();
+  if (!code || !name) { toast('Code and name are required', true); return; }
+  loading(true, 'Adding product…');
+  try {
+    await sbPost('Products?on_conflict=code', [{ code, name, shorthand: $('npShort').value.trim() }], 'resolution=merge-duplicates,return=minimal');
+    const priceRow = { code };
+    if ($('npRetail').value !== '') priceRow.retail_price = num($('npRetail').value);
+    if ($('npWholesale').value !== '') priceRow.wholesale_price = num($('npWholesale').value);
+    await sbPost('Prices?on_conflict=code', [priceRow], 'resolution=merge-duplicates,return=minimal');
+    ['npCode', 'npName', 'npShort', 'npRetail', 'npWholesale'].forEach((id) => { $(id).value = ''; });
+    toast('Product added');
+    await loadData();
+    renderProducts();
+  } catch (err) { toast(err.message, true); }
+  finally { loading(false); }
+});
+
+function renderProducts() {
+  const q = $('prodFilter').value.trim().toLowerCase();
+  const list = q ? searchProducts(q) : PRODUCTS;
+  $('prodCount').textContent = list.length + ' of ' + PRODUCTS.length;
+  $('prodBody').innerHTML = list.map((p) =>
+    '<tr data-code="' + esc(p.code) + '">' +
+    '<td class="mono">' + esc(p.code) + '</td>' +
+    '<td><input type="text" data-f="name" value="' + esc(p.name) + '"></td>' +
+    '<td><input type="text" data-f="shorthand" value="' + esc(p.shorthand) + '" style="width:110px"></td>' +
+    '<td class="t-right"><input type="number" step="0.01" class="price-in num" data-p="retail_price" value="' + (p.prices.retail_price ?? '') + '"></td>' +
+    '<td class="t-right"><input type="number" step="0.01" class="price-in num" data-p="wholesale_price" value="' + (p.prices.wholesale_price ?? '') + '"></td>' +
+    '<td><button class="btn btn-small" data-tiers="' + esc(p.code) + '">All prices</button></td>' +
+    '<td><button class="btn btn-small btn-danger" data-delprod="' + esc(p.code) + '">✕</button></td>' +
+    '</tr>' +
+    '<tr class="tier-row" data-tier-for="' + esc(p.code) + '" style="display:none"><td colspan="7"></td></tr>'
+  ).join('') || '<tr><td colspan="7" class="empty">No products</td></tr>';
+}
+$('prodFilter').addEventListener('input', renderProducts);
+
+$('prodBody').addEventListener('change', async (e) => {
+  const el = e.target;
+  const tr = el.closest('tr[data-code]');
+  if (!tr) return;
+  const code = tr.dataset.code;
+  try {
+    if (el.dataset.f) {
+      await sbPatch('Products?code=eq.' + encodeURIComponent(code), { [el.dataset.f]: el.value.trim() });
+    } else if (el.dataset.p) {
+      await sbPost('Prices?on_conflict=code', [{ code, [el.dataset.p]: el.value === '' ? null : num(el.value) }], 'resolution=merge-duplicates,return=minimal');
+    } else return;
+    const p = prodByCode(code);
+    if (p) {
+      if (el.dataset.f) p[el.dataset.f] = el.value.trim();
+      if (el.dataset.p) p.prices[el.dataset.p] = el.value === '' ? null : num(el.value);
     }
+    toast('Saved');
+  } catch (err) { toast(err.message, true); }
+});
+
+$('prodBody').addEventListener('click', async (e) => {
+  const tiers = e.target.closest('[data-tiers]');
+  const del = e.target.closest('[data-delprod]');
+  const saveTiers = e.target.closest('[data-savetiers]');
+
+  if (tiers) {
+    const code = tiers.dataset.tiers;
+    const row = document.querySelector('tr[data-tier-for="' + CSS.escape(code) + '"]');
+    if (row.style.display !== 'none') { row.style.display = 'none'; return; }
+    const p = prodByCode(code);
+    row.firstElementChild.innerHTML =
+      '<div class="row" style="flex-wrap:wrap;gap:10px;padding:6px 0">' +
+      PRICE_TIERS.map((t) =>
+        '<div style="flex:0 0 150px"><label class="fld">' + esc(t) + '</label>' +
+        '<input type="number" step="0.01" class="num" data-tiercol="' + esc(t) + '" value="' + (p.prices[t] ?? '') + '"></div>'
+      ).join('') +
+      '</div><div class="modal-actions" style="margin-top:4px"><div class="right">' +
+      '<button class="btn btn-small btn-primary" data-savetiers="' + esc(code) + '">Save all prices</button></div></div>';
+    row.style.display = '';
+  }
+
+  if (saveTiers) {
+    const code = saveTiers.dataset.savetiers;
+    const row = document.querySelector('tr[data-tier-for="' + CSS.escape(code) + '"]');
+    const body = { code };
+    row.querySelectorAll('[data-tiercol]').forEach((inp) => {
+      body[inp.dataset.tiercol] = inp.value === '' ? null : num(inp.value);
+    });
+    loading(true, 'Saving prices…');
+    try {
+      await sbPost('Prices?on_conflict=code', [body], 'resolution=merge-duplicates,return=minimal');
+      const p = prodByCode(code);
+      if (p) Object.assign(p.prices, body);
+      toast('Prices saved');
+      row.style.display = 'none';
+    } catch (err) { toast(err.message, true); }
+    finally { loading(false); }
+  }
+
+  if (del) {
+    const code = del.dataset.delprod;
+    const p = prodByCode(code);
+    if (!confirm('Delete ' + ((p && p.name) || code) + ' and all its prices?')) return;
+    try {
+      await sbDelete('Prices?code=eq.' + encodeURIComponent(code));
+      await sbDelete('Products?code=eq.' + encodeURIComponent(code));
+      toast('Product deleted');
+      await loadData();
+      renderProducts();
+    } catch (err) { toast(err.message, true); }
+  }
+});
+
+/* ═════════════════════════════ CUSTOMERS ════════════════════════════════ */
+$('addCustomerBtn').addEventListener('click', async () => {
+  const acct = $('ncNum').value.trim();
+  const name = $('ncName').value.trim();
+  if (!acct || !name) { toast('Account number and name are required', true); return; }
+  try {
+    await sbPost('Customers?on_conflict=account_number', [{ account_number: acct, account_name: name, fallback_price: 'Wholesale' }], 'resolution=merge-duplicates,return=minimal');
+    $('ncNum').value = ''; $('ncName').value = '';
+    toast('Customer added');
+    await loadData();
+    renderCustomers();
+  } catch (err) { toast(err.message, true); }
+});
+
+function renderCustomers() {
+  const q = $('custFilter').value.trim().toLowerCase();
+  const list = q ? searchCustomers(q) : CUSTOMERS;
+  $('custCount').textContent = list.length + ' of ' + CUSTOMERS.length;
+  $('custBody').innerHTML = list.slice(0, 400).map((c) =>
+    '<tr>' +
+    '<td>' + esc(c.account_name || '') + '</td>' +
+    '<td class="mono">' + esc(c.account_number || '') + '</td>' +
+    '<td>' + esc(c.price_band || '—') + '</td>' +
+    '<td>' + (c.Route ? '<span class="badge b-route">' + esc(c.Route) + '</span>' : '—') + '</td>' +
+    '<td>' + (c.on_hold ? '<span class="badge b-hold">HOLD</span>' : '') + '</td>' +
+    '<td class="t-right"><button class="btn btn-small" data-editcust="' + esc(c.account_number) + '">Edit</button></td>' +
+    '</tr>'
+  ).join('') || '<tr><td colspan="6" class="empty">No customers</td></tr>';
+  if (list.length > 400) $('custBody').innerHTML += '<tr><td colspan="6" class="empty">Showing first 400 — refine the filter</td></tr>';
+}
+$('custFilter').addEventListener('input', renderCustomers);
+
+let modalCustomer = null;
+
+$('custBody').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-editcust]');
+  if (b) openCustomerModal(custByAcct(b.dataset.editcust));
+});
+
+function openCustomerModal(c) {
+  if (!c) return;
+  modalCustomer = c;
+  $('cmTitle').textContent = c.account_number + ' — ' + (c.account_name || '');
+  $('cmName').value = c.account_name || '';
+  $('cmRoute').value = c.Route || '';
+  $('cmBand').value = c.price_band || '';
+  $('cmFallback').value = /ret/i.test(c.fallback_price || '') ? 'Retail' : 'Wholesale';
+  $('cmNotes').value = c.Notes || '';
+  $('cmPhone').value = c.phone || '';
+  $('cmEmail').value = c.email || '';
+  const addr = custAddressLines(c);
+  $('cmAddress').textContent = addr.length ? addr.join(', ') : 'No address yet — it arrives with the Sage sync';
+  renderOverrides();
+  $('ovSearch').value = ''; $('ovPrice').value = '';
+  $('custModal').classList.add('open');
+}
+function closeCustomerModal() { $('custModal').classList.remove('open'); modalCustomer = null; }
+$('cmCloseBtn').addEventListener('click', closeCustomerModal);
+$('custModal').addEventListener('click', (e) => { if (e.target === $('custModal')) closeCustomerModal(); });
+
+function renderOverrides() {
+  const c = modalCustomer;
+  const list = OVERRIDES.filter((o) => o.account_number === c.account_number);
+  $('ovList').innerHTML = list.length ? list.map((o) => {
+    const p = prodByCode(o.product_code);
+    return '<div class="log-item"><span class="who">' + esc((p && p.name) || o.product_code) +
+      '<span class="acct">' + esc(o.product_code) + '</span></span>' +
+      '<span class="amt">' + money(o.price) + '</span>' +
+      '<button class="btn btn-small btn-danger" data-delov="' + esc(o.product_code) + '">✕</button></div>';
+  }).join('') : '<div class="empty">No overrides for this customer</div>';
+}
+
+let ovSelected = null;
+attachDropdown($('ovSearch'), $('ovResults'), searchProducts, (p) =>
+  '<span class="dd-main">' + esc(p.name) + '</span><span class="dd-side"><span class="mono">' + esc(p.code) + '</span></span>',
+(p) => { ovSelected = p; $('ovSearch').value = p.name + ' (' + p.code + ')'; });
+
+$('ovAddBtn').addEventListener('click', async () => {
+  if (!modalCustomer || !ovSelected) { toast('Pick a product first', true); return; }
+  if ($('ovPrice').value === '') { toast('Enter the override price', true); return; }
+  try {
+    await sbPost('customer_overrides?on_conflict=account_number,product_code',
+      [{ account_number: modalCustomer.account_number, product_code: ovSelected.code, price: num($('ovPrice').value) }],
+      'resolution=merge-duplicates,return=minimal');
+    OVERRIDES = OVERRIDES.filter((o) => !(o.account_number === modalCustomer.account_number && o.product_code === ovSelected.code));
+    OVERRIDES.push({ account_number: modalCustomer.account_number, product_code: ovSelected.code, price: num($('ovPrice').value) });
+    ovSelected = null; $('ovSearch').value = ''; $('ovPrice').value = '';
+    renderOverrides();
+    toast('Override saved');
+  } catch (err) { toast(err.message, true); }
+});
+
+$('ovList').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-delov]');
+  if (!b || !modalCustomer) return;
+  try {
+    await sbDelete('customer_overrides?account_number=eq.' + encodeURIComponent(modalCustomer.account_number) + '&product_code=eq.' + encodeURIComponent(b.dataset.delov));
+    OVERRIDES = OVERRIDES.filter((o) => !(o.account_number === modalCustomer.account_number && o.product_code === b.dataset.delov));
+    renderOverrides();
+    toast('Override removed');
+  } catch (err) { toast(err.message, true); }
+});
+
+$('cmSaveBtn').addEventListener('click', async () => {
+  if (!modalCustomer) return;
+  loading(true, 'Saving customer…');
+  try {
+    await sbPatch('Customers?account_number=eq.' + encodeURIComponent(modalCustomer.account_number), {
+      account_name: $('cmName').value.trim(),
+      Route: $('cmRoute').value || null,
+      price_band: $('cmBand').value || null,
+      fallback_price: $('cmFallback').value,
+      Notes: $('cmNotes').value,
+      phone: $('cmPhone').value.trim(),
+      email: $('cmEmail').value.trim(),
+    });
+    toast('Customer saved');
+    closeCustomerModal();
+    await loadData();
+    renderCustomers();
+  } catch (err) { toast(err.message, true); }
+  finally { loading(false); }
+});
+
+$('cmDeleteBtn').addEventListener('click', async () => {
+  if (!modalCustomer) return;
+  if (!confirm('Delete ' + (modalCustomer.account_name || modalCustomer.account_number) + '?\n\nIf they still exist in Sage, the next sync will bring them back.')) return;
+  loading(true, 'Deleting…');
+  try {
+    await sbDelete('customer_overrides?account_number=eq.' + encodeURIComponent(modalCustomer.account_number)).catch(() => {});
+    await sbDelete('Customers?account_number=eq.' + encodeURIComponent(modalCustomer.account_number));
+    toast('Customer deleted');
+    closeCustomerModal();
+    await loadData();
+    renderCustomers();
+  } catch (err) { toast(err.message, true); }
+  finally { loading(false); }
+});
+
+/* ═════════════════════════════ SAGE TAB ═════════════════════════════════ */
+async function refreshSageStatus() {
+  const strip = $('sgStrip');
+  try {
+    const s = await fn('status');
+    strip.classList.toggle('ok', s.connected);
+    strip.classList.remove('err');
+    $('sgStatusText').textContent = s.connected ? 'Connected to Sage' : 'Not connected';
+    const bits = [];
+    if (s.connected && s.site_id) bits.push('Site ' + s.site_id + ' · Company ' + s.company_id);
+    if (s.last_sync) bits.push('Last sync: ' + new Date(s.last_sync.started_at).toLocaleString('en-GB') + ' (' + s.last_sync.status + ')');
+    $('sgMeta').textContent = bits.join('  ·  ');
+    $('sgDisconnectBtn').style.display = s.connected ? '' : 'none';
+    $('sgConnectBtn').textContent = s.connected ? 'Reconnect' : 'Connect to Sage';
+  } catch (err) {
+    strip.classList.add('err');
+    strip.classList.remove('ok');
+    $('sgStatusText').textContent = 'Sage function unreachable';
+    $('sgMeta').textContent = err.message;
+    $('sgDisconnectBtn').style.display = 'none';
   }
 }
-function getPickedCount(rk,customers){
-  if(!pickedState[rk])return 0;
-  return customers.filter(c=>pickedState[rk][c.cust]).length;
-}
 
-// ── ROUTES TAB ────────────────────────────────────────────────────────────────
-function getUniqueDates(){return[...new Set(savedOrders.map(o=>o.delDate))].sort();}
-function getMergedForRoute(routeOrders){
-  const byCust={};
-  routeOrders.forEach(o=>{
-    if(!byCust[o.cust])byCust[o.cust]={cust:o.custName||o.cust,acctNum:o.cust,orders:[],mergedLines:{},total:0,items:0,custNotes:'',custTier:o.custTier||''};
-    if(o.deliveryNotes){byCust[o.cust].custNotes=byCust[o.cust].custNotes?byCust[o.cust].custNotes+' | '+o.deliveryNotes:o.deliveryNotes;}
-    const bc=byCust[o.cust];bc.orders.push(o.dbId||'');bc.total+=o.total;bc.items+=o.items;
-    o.lines.forEach(l=>{
-      if(!bc.mergedLines[l.productCode])bc.mergedLines[l.productCode]={...l,qty:0,lineTotal:0};
-      bc.mergedLines[l.productCode].qty+=l.qty;
-      bc.mergedLines[l.productCode].lineTotal+=l.qty*l.price;
-    });
-  });
-  return byCust;
-}
+$('sgConnectBtn').addEventListener('click', () => {
+  const state = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  try { sessionStorage.setItem('sage_state', state); } catch (_) {}
+  const url = 'https://id.sage.com/authorize' +
+    '?audience=' + encodeURIComponent('s200ukipd/sage200') +
+    '&response_type=code' +
+    '&client_id=' + encodeURIComponent(CONFIG.SAGE_CLIENT_ID) +
+    '&redirect_uri=' + encodeURIComponent(CONFIG.SAGE_REDIRECT) +
+    '&scope=' + encodeURIComponent('openid profile email offline_access') +
+    '&state=' + encodeURIComponent(state);
+  location.href = url;
+});
 
-function renderRouteTab(){
-  const container=document.getElementById('routes-content');
-  const dates=getUniqueDates();
-  if(!dates.length){container.innerHTML='<div class="no-items" style="padding:48px">No active orders. Mark routes as delivered to remove them.</div>';return;}
-  if(!activeRouteDay||!dates.includes(activeRouteDay))activeRouteDay=dates[0];
-  const dayOrders=savedOrders.filter(o=>o.delDate===activeRouteDay);
-  const usedRoutes=[...new Set(dayOrders.map(o=>o.driver).filter(Boolean))];
-  if(!activeRoute||!usedRoutes.includes(activeRoute))activeRoute=usedRoutes[0]||null;
-  const datePills=dates.map(d=>`<button class="pill${d===activeRouteDay?' active':''}" onclick="selectDay('${d}')">${fmt(d)}<span class="cnt">${savedOrders.filter(o=>o.delDate===d).length}</span></button>`).join('');
-  const routePills=usedRoutes.map(r=>{
-    const isDelivered=!!(deliveredRoutes[activeRouteDay]?.[r]);
-    const cnt=dayOrders.filter(o=>o.driver===r).length;
-    return `<button class="pill${r===activeRoute?' active':''}${isDelivered?' delivered':''}" onclick="selectRoute('${r.replace(/'/g,"\\'")}')">
-      ${isDelivered?'<i class="ti ti-check"></i> ':''}${r}<span class="cnt">${cnt}</span></button>`;
-  }).join('');
-  container.innerHTML=`
-    <div class="section" style="padding-bottom:10px">
-      <div class="section-title">Delivery date</div><div class="pill-row">${datePills}</div>
-      ${usedRoutes.length?`<div class="section-title" style="margin-top:8px">Route</div><div class="pill-row">${routePills}</div>`:''}
-    </div>
-    <div id="route-inner"></div>`;
-  renderRouteInner();
-}
+$('sgDisconnectBtn').addEventListener('click', async () => {
+  if (!confirm('Disconnect from Sage? You can reconnect at any time.')) return;
+  try { await fn('disconnect'); toast('Disconnected'); refreshSageStatus(); }
+  catch (err) { toast(err.message, true); }
+});
 
-function renderRouteInner(){
-  const inner=document.getElementById('route-inner');if(!inner||!activeRoute)return;
-  const dayOrders=savedOrders.filter(o=>o.delDate===activeRouteDay&&o.driver===activeRoute);
-  const byCust=getMergedForRoute(dayOrders);
-  const customers=Object.values(byCust);
-  const rk=routeKey(activeRouteDay,activeRoute);
-  const isDelivered=!!(deliveredRoutes[activeRouteDay]?.[activeRoute]);
-  const totalCusts=customers.length;
-  const pickedCount=getPickedCount(rk,customers);
-  const pct=totalCusts?Math.round(pickedCount/totalCusts*100):0;
-  const allItems=customers.reduce((a,c)=>a+c.items,0);
-  const allVal=customers.reduce((a,c)=>a+c.total,0);
-  let html=`<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;gap:12px;flex-wrap:wrap">
-    <div class="route-summary">
-      <div class="route-stat"><div class="rs-val">${totalCusts}</div><div class="rs-lbl">Customers</div></div>
-      <div class="route-stat"><div class="rs-val">${dayOrders.length}</div><div class="rs-lbl">Orders</div></div>
-      <div class="route-stat"><div class="rs-val">${allItems}</div><div class="rs-lbl">Items</div></div>
-      <div class="route-stat"><div class="rs-val">£${allVal.toFixed(2)}</div><div class="rs-lbl">Value</div></div>
-    </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn" onclick="printRoute()"><i class="ti ti-printer"></i> Print pick list</button>
-      <button class="btn" onclick="printDeliveryNotes()"><i class="ti ti-clipboard-list"></i> Print delivery notes</button>
-      <button class="btn" onclick="exportSageCSV()"><i class="ti ti-file-spreadsheet"></i> Export to Sage</button>
-      ${isDelivered
-        ?`<button class="btn" style="opacity:.5;cursor:default"><i class="ti ti-check"></i> Delivered</button>`
-        :`<button class="btn btn-success" onclick="confirmDelivered()"><i class="ti ti-truck-delivery"></i> Mark delivered</button>`}
-    </div>
-  </div>
-  ${isDelivered?`<div class="msg-box msg-success"><i class="ti ti-check"></i> This route has been marked as delivered.</div>`:''}
-  <div style="margin-bottom:14px">
-    <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-      <span style="font-size:12px;color:#5a5a58">Picking progress</span>
-      <span style="font-size:12px;font-weight:500;color:${pct===100?'#166534':'#5a5a58'}">${pickedCount}/${totalCusts} customers${pct===100?' — all done!':''}</span>
-    </div>
-    <div class="progress-bar-wrap"><div class="progress-bar" style="width:${pct}%"></div></div>
-  </div>`;
-  html+=customers.map(c=>{
-    const mergedArr=Object.values(c.mergedLines);
-    const ordersLabel=c.orders.length>1?`Merged: ${c.orders.join(', ')}`:`Order: ${c.orders[0]}`;
-    const done=!!(pickedState[rk]?.[c.cust]);
-    const tierBadge=c.custTier?`<span class="tier-badge" style="margin-left:6px;font-size:10px">${c.custTier}</span>`:'';
-    const custData=CUSTOMERS.find(x=>x.name===c.cust);
-    const windowBadge='';
-    const custNotesHtml=(custData&&custData.notes)?`<div class="cust-notes-badge"><i class="ti ti-note" style="font-size:11px"></i>${custData.notes}</div>`:'';
-    const delNotesHtml=c.custNotes?`<div class="cust-notes-badge" style="background:var(--blue-bg);color:var(--blue-text);border-color:#93c5fd"><i class="ti ti-truck" style="font-size:11px"></i>${c.custNotes}</div>`:'';
-    const notesHtml=custNotesHtml+delNotesHtml;
-    return `<div class="cust-block">
-      <div class="cust-header${done?' done':''}">
-        <div><div class="cust-name">${done?'<i class="ti ti-check"></i> ':''}${c.cust}${tierBadge}</div>
-        <div class="cust-meta">${ordersLabel} · ${c.items} items · £${c.total.toFixed(2)}</div>
-        ${windowBadge}${notesHtml}</div>
-        <button class="pick-check${done?' checked':''}" onclick="togglePickCust('${rk}','${c.cust.replace(/'/g,"\\'")}')"><i class="ti ti-check"></i></button>
-      </div>
-      <table class="pick-table">
-        <thead><tr><th style="width:28px">#</th><th>Product</th><th style="text-align:center">Code</th><th style="text-align:center">Qty</th><th style="text-align:right">Total</th></tr></thead>
-        <tbody>${mergedArr.map((l,i)=>`<tr>
-          <td style="color:#9a9a97;font-size:12px">${i+1}</td>
-          <td style="font-weight:500">${l.productName}</td>
-          <td class="pick-short" style="text-align:center">${getShort(l.productCode)}</td>
-          <td class="pick-qty">${l.qty}</td>
-          <td style="text-align:right;font-weight:500">£${l.lineTotal.toFixed(2)}</td>
-        </tr>`).join('')}</tbody>
-      </table>
-    </div>`;
-  }).join('');
-  inner.innerHTML=html;
-}
-
-function routeKey(d,r){return d+'||'+r;}
-function selectDay(d){activeRouteDay=d;activeRoute=null;renderRouteTab();}
-function selectRoute(r){activeRoute=r;renderRouteTab();}
-
-function confirmDelivered(){
-  if(!confirm(`Mark ${activeRoute} on ${fmt(activeRouteDay)} as delivered?\n\nWhen all routes for this day are marked, the day is removed.`))return;
-  if(!deliveredRoutes[activeRouteDay])deliveredRoutes[activeRouteDay]={};
-  deliveredRoutes[activeRouteDay][activeRoute]=true;
-  const dayOrders=savedOrders.filter(o=>o.delDate===activeRouteDay);
-  const usedRoutes=[...new Set(dayOrders.map(o=>o.driver).filter(Boolean))];
-  if(usedRoutes.every(r=>deliveredRoutes[activeRouteDay]?.[r])){
-    const toRemove=savedOrders.filter(o=>o.delDate===activeRouteDay);
-    savedOrders=savedOrders.filter(o=>o.delDate!==activeRouteDay);
-    delete deliveredRoutes[activeRouteDay];
-    activeRoute=null;
-    const remaining=getUniqueDates();
-    activeRouteDay=remaining.length?remaining[0]:null;
-    for(const o of toRemove) deleteOrderFromDb(o.dbId);
-  }
-  updateBadges();renderRouteTab();
-}
-
-// ── PRINT ─────────────────────────────────────────────────────────────────────
-function fmt(s){if(!s)return'—';const[y,m,d]=s.split('-');return new Date(y,m-1,d).toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',year:'numeric'});}
-
-function printRoute(){
-  const dayOrders=savedOrders.filter(o=>o.delDate===activeRouteDay&&o.driver===activeRoute);
-  if(!dayOrders.length)return;
-  const byCust=getMergedForRoute(dayOrders);
-  const customers=Object.values(byCust);
-  const rk=routeKey(activeRouteDay,activeRoute);
-  const rows=customers.map(c=>{
-    const mergedArr=Object.values(c.mergedLines);
-    const allDone=!!(pickedState[rk]?.[c.cust]);
-    const shorthands=mergedArr.map(l=>`<strong>${l.qty} ${getShort(l.productCode)}</strong>`).join(' &nbsp; ');
-    const pCust=CUSTOMERS.find(x=>x.name===c.cust);
-    const custNoteLine=(pCust&&pCust.notes)?`<div style="font-size:10px;margin-top:2px;font-style:italic">★ ${pCust.notes}</div>`:'';
-    const delNoteLine=c.custNotes?`<div style="font-size:10px;margin-top:2px;font-style:italic">→ ${c.custNotes}</div>`:'';
-    const notesCell=custNoteLine+delNoteLine;
-    return `<tr>
-      <td style="padding:5px 10px;border-bottom:1px solid #000;font-weight:600;width:175px;vertical-align:top">${c.cust}${notesCell}</td>
-      <td style="padding:5px 10px;border-bottom:1px solid #000;font-size:14px;vertical-align:middle">${shorthands}</td>
-      <td style="padding:5px 10px;border-bottom:1px solid #000;text-align:center;vertical-align:middle;font-size:16px">${allDone?'✓':'<span style="display:inline-block;width:18px;height:18px;border:1.5px solid #000;border-radius:3px"></span>'}</td>
-    </tr>`;
-  }).join('');
-  const w=window.open('','_blank');
-  w.document.write(`<!DOCTYPE html><html><head><title>Pick List</title>
-  <style>body{font-family:Arial,sans-serif;font-size:13px;color:#000;max-width:800px;margin:0 auto;padding:16px}@media print{body{padding:8px}}</style></head><body>
-  <div style="display:flex;justify-content:space-between;border-bottom:2px solid #000;padding-bottom:8px;margin-bottom:10px">
-    <div><div style="font-size:16px;font-weight:700">PICK LIST · ${activeRoute}</div>
-    <div style="font-size:12px;margin-top:2px">Delivery: ${fmt(activeRouteDay)}</div></div>
-  </div>
-  <table style="width:100%;border-collapse:collapse">
-    <thead><tr>
-      <th style="padding:5px 10px;text-align:left;border-bottom:2px solid #000;width:175px;font-size:11px;text-transform:uppercase">Customer</th>
-      <th style="padding:5px 10px;text-align:left;border-bottom:2px solid #000;font-size:11px;text-transform:uppercase">Items</th>
-      <th style="padding:5px 10px;text-align:center;border-bottom:2px solid #000;width:40px;font-size:11px;text-transform:uppercase">Done</th>
-    </tr></thead>
-    <tbody>${rows}</tbody>
-  </table>
-  <script>window.onload=()=>window.print()<\/script></body></html>`);
-  w.document.close();
-}
-
-// ── SAGE EXPORT ───────────────────────────────────────────────────────────────
-// ── DELIVERY NOTES ────────────────────────────────────────────────────────────
-function printDeliveryNotes(){
-  const dayOrders=savedOrders.filter(o=>o.delDate===activeRouteDay&&o.driver===activeRoute);
-  if(!dayOrders.length){alert('No orders to print delivery notes for.');return;}
-  const byCust=getMergedForRoute(dayOrders);
-  const customers=Object.values(byCust);
-
-  const pages=customers.map((c,ci)=>{
-    const mergedArr=Object.values(c.mergedLines);
-    const orderNums=c.orders.join(', ');
-    const subtotal=c.total;
-    const notesHtml=c.custNotes?`<div style="margin:6px 0;padding:6px 8px;background:#fffbeb;border-left:3px solid #f59e0b;font-size:11px;color:#92400e"><strong>Note:</strong> ${c.custNotes}</div>`:'';
-
-    const itemRows=mergedArr.map((l,i)=>`
-      <tr style="${i%2===0?'background:#fafafa':''}">
-        <td style="padding:5px 8px;border-bottom:1px solid #eee">${l.productName}</td>
-        <td style="padding:5px 8px;border-bottom:1px solid #eee;text-align:center;font-weight:600">${l.qty}</td>
-        <td style="padding:5px 8px;border-bottom:1px solid #eee;text-align:right">£${l.price.toFixed(2)}</td>
-        <td style="padding:5px 8px;border-bottom:1px solid #eee;text-align:right;font-weight:500">£${l.lineTotal.toFixed(2)}</td>
-      </tr>`).join('');
-
-    const noteHtml=`<div style="padding:16px;font-family:Arial,sans-serif;font-size:12px;color:#111;min-height:100%;display:flex;flex-direction:column">
-      <div style="border-bottom:2px solid #111;padding-bottom:6px;margin-bottom:8px">
-        <div style="font-size:15px;font-weight:600">${c.cust}</div>
-      </div>
-      <table style="width:100%;border-collapse:collapse;margin-bottom:10px">
-        <thead>
-          <tr style="background:#f0f0f0">
-            <th style="padding:5px 8px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #ccc">Product</th>
-            <th style="padding:5px 8px;text-align:center;font-size:11px;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #ccc;width:50px">Qty</th>
-            <th style="padding:5px 8px;text-align:right;font-size:11px;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #ccc;width:70px">Unit £</th>
-            <th style="padding:5px 8px;text-align:right;font-size:11px;text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid #ccc;width:80px">Total £</th>
-          </tr>
-        </thead>
-        <tbody>${itemRows}</tbody>
-      </table>
-      <div style="flex:1;min-height:20px"></div>
-      <div>
-        <div style="display:flex;justify-content:flex-end;margin-bottom:14px">
-          <div style="width:200px">
-            <div style="display:flex;justify-content:space-between;padding:6px 8px;border:1px solid #111;font-size:13px">
-              <span style="font-weight:600">Order total</span>
-              <span style="font-weight:700;font-size:14px">£${subtotal.toFixed(2)}</span>
-            </div>
-          </div>
-        </div>
-        <div style="border-top:1px solid #ccc;padding-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div>
-            <div style="font-size:11px;color:#666;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Cash received</div>
-            <div style="border-bottom:1px solid #999;height:24px">£ _______________</div>
-          </div>
-          <div>
-            <div style="font-size:11px;color:#666;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Received by (print name)</div>
-            <div style="border-bottom:1px solid #999;height:24px"></div>
-          </div>
-          <div>
-            <div style="font-size:11px;color:#666;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Signature</div>
-            <div style="border-bottom:1px solid #999;height:28px"></div>
-          </div>
-          <div>
-            <div style="font-size:11px;color:#666;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Items not delivered / changes</div>
-            <div style="border-bottom:1px solid #999;height:28px"></div>
-          </div>
-        </div>
-      </div>
-    </div>`;
-    const pageBreak='page-break-after:always';
-    return `<div style="${pageBreak};min-height:100vh">${noteHtml}</div><div style="${ci<customers.length-1?pageBreak+';min-height:100vh':'min-height:100vh'}">${noteHtml}</div>`;
-  }).join('');
-
-  const w=window.open('','_blank');
-  w.document.write(`<!DOCTYPE html><html><head><title>Delivery Notes</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    html,body{background:#fff;height:100%}
-    @media print{
-      @page{margin:10mm;size:auto}
-      .no-print{display:none}
-      html,body{height:auto}
-    }
-  </style>
-  </head><body>
-  <div class="no-print" style="font-family:Arial,sans-serif;font-size:13px;background:#1a1a1a;color:#fff;padding:10px 16px;display:flex;justify-content:space-between;align-items:center">
-    <span>Delivery Notes — ${fmt(activeRouteDay)} — ${customers.length} customer${customers.length>1?'s':''}</span>
-    <button onclick="window.print()" style="background:#fff;color:#111;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-weight:600">Print</button>
-  </div>
-  ${pages}
-  <script>window.onload=()=>window.print()<\/script>
-  </body></html>`);
-  w.document.close();
-}
-
-
-
-function exportSageCSV(){
-  const dayOrders=savedOrders.filter(o=>o.delDate===activeRouteDay&&o.driver===activeRoute);
-  if(!dayOrders.length){alert('No orders to export.');return;}
-  const rows=[['Type','Customer Account','Order Date','Delivery Date','Order No','Product Code','Description','Qty','Unit Price','Discount %','Nominal Code','Tax Code','Line Notes']];
-  dayOrders.forEach(o=>{
-    o.lines.forEach(l=>{
-      rows.push(['SI',o.custName||o.cust,o.delDate,o.delDate,o.dbId||'',l.productCode,l.productName,l.qty,l.price.toFixed(2),'0.00','4000','T1','']);
-    });
-  });
-  const safeRoute=activeRoute.replace(/[^a-z0-9]/gi,'_');
-  downloadCSV(rows,`sage_import_${safeRoute}_${activeRouteDay.replace(/-/g,'')}.csv`);
-  alert('CSV exported.\n\nTo import into Sage 200:\nSales Order Processing → Import Sales Orders → select the file.\n\nCheck Nominal Code (default 4000) and Tax Code (default T1) match your Sage setup.');
-}
-
-// ── LOG ───────────────────────────────────────────────────────────────────────
-function renderLog(){
-  const body=document.getElementById('log-body');
-  if(!savedOrders.length){body.innerHTML='<div class="no-items">No orders saved yet</div>';return;}
-  const typeClass={retail_price:'badge-rt',wholesale_price:'badge-wh'};
-  const byDate={};savedOrders.forEach(o=>{if(!byDate[o.delDate])byDate[o.delDate]=[];byDate[o.delDate].push(o);});
-  let html=`<div class="log-row log-hdr"><span>Order</span><span>Customer</span><span>Lines</span><span>Total</span><span>Route</span><span>Type</span><span></span></div>`;
-  Object.keys(byDate).sort().forEach(d=>{
-    html+=`<div class="date-group-label"><i class="ti ti-calendar" style="font-size:12px;vertical-align:-1px;margin-right:4px"></i>${fmt(d)}</div>`;
-    byDate[d].forEach((o,i)=>{
-      const idx=savedOrders.indexOf(o);
-      html+=`<div class="log-row">
-        <span style="font-weight:500">#${o.dbId||'—'}</span>
-        <span>${o.custName||o.cust}</span>
-        <span style="text-align:center">${o.lines.length}</span>
-        <span style="text-align:right;font-weight:500">£${o.total.toFixed(2)}</span>
-        <span style="font-size:11px;color:#5a5a58">${o.driver}</span>
-        <span><span class="badge ${typeClass[o.type]||'badge-cu'}">${typeLabel(o.type)}</span></span>
-        <span><button class="btn" style="height:26px;padding:0 8px;font-size:11px" onclick="openEditModal(${idx})"><i class="ti ti-pencil"></i> Edit</button></span>
-      </div>`;
-    });
-  });
-  body.innerHTML=html;
-}
-
-// ── EDIT ORDER MODAL ──────────────────────────────────────────────────────────
-let editOrderIdx = null;
-let editLines = [];
-let editLineIdCounter = 0;
-let editActiveDD = null;
-let editDDHighlight = -1;
-
-function openEditModal(idx){
-  editOrderIdx = idx;
-  const o = savedOrders[idx];
-  editLines = o.lines.map((l,i)=>({id:++editLineIdCounter,...l}));
-
-  // Set customer search input
-  const custName = o.custName||o.cust;
-  document.getElementById('edit-cust-input').value=custName;
-  document.getElementById('edit-cust-input').classList.add('filled');
-  document.getElementById('edit-cust').value=custName;
-
-  document.getElementById('edit-type').value=o.type||'retail_price';
-  if(!document.getElementById('edit-type').value)document.getElementById('edit-type').value='retail_price';
-  document.getElementById('edit-date').value=o.delDate;
-  document.getElementById('edit-driver').value=o.driver;
-  document.getElementById('edit-del-notes').value=o.deliveryNotes||'';
-  document.getElementById('edit-modal-title').textContent=`Edit order — ${custName}`;
-
-  renderEditLines();
-  document.getElementById('edit-modal').style.display='flex';
-}
-
-function closeEditModal(){
-  document.getElementById('edit-modal').style.display='none';
-  closeEditDropdown();
-  closeEditCustDD();
-  editOrderIdx=null;editLines=[];
-}
-
-function addEditLine(focusIt=true){
-  const id=++editLineIdCounter;
-  editLines.push({id,productCode:'',productName:'',qty:1,price:0});
-  renderEditLines();
-  if(focusIt)setTimeout(()=>{const i=document.getElementById('epi-'+id);if(i)i.focus();},30);
-}
-
-function removeEditLine(id){editLines=editLines.filter(l=>l.id!==id);renderEditLines();}
-
-function renderEditLines(){
-  const c=document.getElementById('edit-lines');
-  if(!editLines.length){c.innerHTML='<div class="no-items" style="padding:16px">No lines — add one below</div>';updateEditTotal();return;}
-  c.innerHTML=editLines.map((l,i)=>{
-    const total=(l.qty&&l.price)?'£'+(l.qty*l.price).toFixed(2):'—';
-    return `<div class="line-row" id="erow-${l.id}">
-      <span class="line-num">${i+1}</span>
-      <div class="product-wrap">
-        <input class="product-input${l.productCode?' filled':''}" id="epi-${l.id}" value="${l.productName||''}" placeholder="Search product…" autocomplete="off"
-          oninput="onEditProductInput(${l.id},this.value)" onkeydown="onEditProductKey(event,${l.id})"
-          onblur="onEditProductBlur(${l.id})" onfocus="onEditProductFocus(${l.id},this.value)"/>
-      </div>
-      <input class="qty-input" id="eqi-${l.id}" type="number" min="0.5" step="1" value="${l.qty}"
-        oninput="onEditQtyInput(${l.id},this.value)" onblur="onEditQtyBlur(${l.id},this.value)"
-        onkeydown="onEditQtyKey(event,${l.id})"/>
-      <input class="price-input" id="epc-${l.id}" type="number" min="0" step="0.01" tabindex="-1" title="Override price for this order only"
-        value="${l.price>0?l.price.toFixed(2):''}" placeholder="£0.00"
-        oninput="onEditPriceInput(${l.id},this.value)" onblur="onEditPriceBlur(${l.id},this.value)"/>
-      <span class="total-cell" id="etc-${l.id}">${total}</span>
-      <button class="del-btn" onclick="removeEditLine(${l.id})"><i class="ti ti-x"></i></button>
-    </div>`;
-  }).join('');
-  updateEditTotal();
-}
-function onEditPriceInput(id,val){
-  const l=editLines.find(x=>x.id===id);if(!l)return;
-  const v=parseFloat(val);
-  l.price=(v>=0&&!isNaN(v))?v:0;
-  const tc=document.getElementById('etc-'+id);
-  if(tc)tc.textContent=(l.qty&&l.price)?'£'+(l.qty*l.price).toFixed(2):'—';
-  updateEditTotal();
-}
-function onEditPriceBlur(id,val){
-  const l=editLines.find(x=>x.id===id);
-  const inp=document.getElementById('epc-'+id);
-  if(l&&inp)inp.value=l.price>0?l.price.toFixed(2):'';
-}
-
-function updateEditTotal(){
-  let total=0;
-  editLines.forEach(l=>{if(l.productCode&&l.price)total+=l.qty*l.price;});
-  document.getElementById('edit-total').textContent='£'+total.toFixed(2);
-}
-
-function getEditPrice(code){
-  const type=document.getElementById('edit-type').value;
-  const cust=document.getElementById('edit-cust').value;
-  return getPrice(code,type,cust);
-}
-
-function onEditProductInput(id,val){
-  closeEditDropdown();
-  if(!val.trim()){const l=editLines.find(x=>x.id===id);if(l){l.productCode='';l.productName='';l.price=0;}updateEditTotal();return;}
-  const words=val.toLowerCase().split(/\s+/).filter(Boolean);
-  const m=PRODUCTS.filter(p=>{
-    const hay=(p.name+' '+p.code+' '+(p.short||'')).toLowerCase();
-    return words.every(w=>hay.includes(w));
-  }).slice(0,12);
-  if(m.length)showEditDropdown(id,m,val);
-}
-function onEditProductFocus(id,val){if(val&&val.trim())onEditProductInput(id,val);}
-
-function showEditDropdown(id,matches,query){
-  closeEditDropdown();editDDHighlight=-1;
-  const inp=document.getElementById('epi-'+id);if(!inp)return;
-  const rect=inp.getBoundingClientRect();
-  const dd=document.createElement('div');dd.className='dropdown';dd.id='edd-active';
-  dd.style.cssText=`top:${rect.bottom+window.scrollY+2}px;left:${rect.left+window.scrollX}px;width:${Math.max(rect.width,320)}px`;
-  const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  dd.innerHTML=matches.map((p,i)=>{
-    const pr=getEditPrice(p.code);
-    const hl=p.name.replace(new RegExp(`(${esc(query)})`,'gi'),'<strong>$1</strong>');
-    const sb=p.short?`<span class="dd-short">${p.short}</span>`:'';
-    return `<div class="dd-item" onmousedown="selectEditProduct(${id},'${p.code}',${JSON.stringify(p.name)})" onmouseover="highlightEditDD(${i})">
-      <div><div class="dd-name">${hl}${sb}</div><div class="dd-meta">${p.code}</div></div>
-      <div class="dd-price">£${pr.toFixed(2)}</div></div>`;
-  }).join('');
-  document.body.appendChild(dd);
-  editActiveDD={id,dd,matches};
-}
-function highlightEditDD(idx){editDDHighlight=idx;if(!editActiveDD)return;editActiveDD.dd.querySelectorAll('.dd-item').forEach((el,i)=>{el.classList.toggle('highlighted',i===idx);if(i===idx)el.scrollIntoView({block:'nearest'});});}
-function closeEditDropdown(){if(editActiveDD?.dd)editActiveDD.dd.remove();editActiveDD=null;editDDHighlight=-1;}
-function selectEditProduct(lineId,code,name){
-  const pr=getEditPrice(code);
-  const l=editLines.find(x=>x.id===lineId);
-  if(l){l.productCode=code;l.productName=name;l.price=pr;}
-  closeEditDropdown();
-  const inp=document.getElementById('epi-'+lineId);
-  if(inp){inp.value=name;inp.classList.add('filled');}
-  const pc=document.getElementById('epc-'+lineId);
-  if(pc)pc.value=pr>0?pr.toFixed(2):'';
-  const tc=document.getElementById('etc-'+lineId);
-  if(tc)tc.textContent='£'+(l.qty*pr).toFixed(2);
-  updateEditTotal();
-  setTimeout(()=>{const qi=document.getElementById('eqi-'+lineId);if(qi){qi.focus();qi.select();}},30);
-}
-function onEditProductBlur(id){setTimeout(()=>closeEditDropdown(),150);}
-function onEditProductKey(e,id){
-  if(!editActiveDD){if(e.key==='Enter'||e.key==='Tab'){e.preventDefault();editMaybeAddNext(id);}return;}
-  if(e.key==='ArrowDown'){e.preventDefault();editDDHighlight=Math.min(editDDHighlight+1,editActiveDD.matches.length-1);highlightEditDD(editDDHighlight);}
-  else if(e.key==='ArrowUp'){e.preventDefault();editDDHighlight=Math.max(editDDHighlight-1,0);highlightEditDD(editDDHighlight);}
-  else if(e.key==='Enter'||e.key==='Tab'){e.preventDefault();const idx=editDDHighlight>=0?editDDHighlight:0;if(editActiveDD.matches[idx])selectEditProduct(id,editActiveDD.matches[idx].code,editActiveDD.matches[idx].name);}
-  else if(e.key==='Escape')closeEditDropdown();
-}
-function onEditQtyInput(id,val){
-  const l=editLines.find(x=>x.id===id);const v=parseFloat(val);
-  if(l&&v>0){l.qty=v;const tc=document.getElementById('etc-'+id);if(tc)tc.textContent=l.price?'£'+(v*l.price).toFixed(2):'—';updateEditTotal();}
-}
-function onEditQtyBlur(id,val){
-  const v=!val||isNaN(val)||parseFloat(val)<=0?1:parseFloat(val);
-  const l=editLines.find(x=>x.id===id);if(l)l.qty=v;
-  const inp=document.getElementById('eqi-'+id);if(inp)inp.value=v;
-  const tc=document.getElementById('etc-'+id);if(tc&&l)tc.textContent=l.price?'£'+(v*l.price).toFixed(2):'—';
-  updateEditTotal();
-}
-function onEditQtyKey(e,id){if(e.key==='Enter'||e.key==='Tab'){e.preventDefault();const inp=document.getElementById('eqi-'+id);if(inp)onEditQtyBlur(id,inp.value);editMaybeAddNext(id);}}
-function editMaybeAddNext(id){
-  const idx=editLines.findIndex(l=>l.id===id);
-  if(idx===editLines.length-1)addEditLine(true);
-  else{const nxt=document.getElementById('epi-'+editLines[idx+1].id);if(nxt)nxt.focus();}
-}
-
-async function saveEditOrder(){
-  if(editOrderIdx===null)return;
-  const filled=editLines.filter(l=>l.productCode&&l.qty);
-  if(!filled.length){alert('Add at least one product line.');return;}
-  const cust=document.getElementById('edit-cust').value;
-  const type=document.getElementById('edit-type').value;
-  const driver=document.getElementById('edit-driver').value;
-  const delDate=document.getElementById('edit-date').value;
-  if(!cust||!driver||!delDate){alert('Please fill in all order details.');return;}
-  let total=0,items=0;
-  filled.forEach(l=>{total+=l.qty*l.price;items+=l.qty;});
-  const custObj=getCust(cust);
-  savedOrders[editOrderIdx]={
-    ...savedOrders[editOrderIdx],
-    cust:custObj.accountNumber||cust, custName:custObj.name||cust,
-    type,driver,delDate,
-    lines:filled.map(l=>({...l})),
-    total,items,
-    deliveryNotes:document.getElementById('edit-del-notes').value||'',
-    custTier:custObj.tier||''
-  };
-  await updateOrderInDb(savedOrders[editOrderIdx]);
-  updateBadges();
-  closeEditModal();
-  renderLog();
-  if(document.getElementById('tab-routes').style.display!=='none')renderRouteTab();
-}
-
-async function deleteOrder(){
-  if(editOrderIdx===null)return;
-  const o=savedOrders[editOrderIdx];
-  if(!confirm(`Delete order for ${o.custName||o.cust}?\n\nThis cannot be undone.`))return;
-  savedOrders.splice(editOrderIdx,1);
-  await deleteOrderFromDb(o.dbId);
-  updateBadges();
-  closeEditModal();
-  renderLog();
-  if(document.getElementById('tab-routes').style.display!=='none')renderRouteTab();
-}
-
-// ── PRODUCT MANAGER ───────────────────────────────────────────────────────────
-function renderProductManager(){
-  document.getElementById('pm-grid').innerHTML=PRODUCTS.map(p=>{
-    return `<div class="pm-card" style="flex-direction:row;align-items:center;gap:10px;padding:10px 14px">
-      <div style="min-width:180px;flex:2;margin-right:4px">
-        <div class="pm-name">${p.name}</div>
-        <div class="pm-code">${p.code}</div>
-      </div>
-      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
-        <div class="pm-field" style="width:72px;flex-shrink:0">
-          <label>Shorthand</label>
-          <input type="text" maxlength="8" value="${p.short||''}" placeholder="e.g. C"
-            oninput="updateShort('${p.code}',this.value)"
-            style="font-family:monospace;font-weight:600;text-transform:uppercase">
-        </div>
-        <div class="pm-field" style="width:88px;flex-shrink:0">
-          <label>Retail £</label>
-          <input type="number" step="0.01" value="${p.retail||''}" oninput="updatePrice('${p.code}','retail_price',this.value)">
-        </div>
-        <div class="pm-field" style="width:88px;flex-shrink:0">
-          <label>Wholesale £</label>
-          <input type="number" step="0.01" value="${p.wholesale||''}" oninput="updatePrice('${p.code}','wholesale_price',this.value)">
-        </div>
-      </div>
-      <button onclick="deleteProduct('${p.code}')" style="background:none;border:none;cursor:pointer;color:#9a9a97;font-size:16px;padding:4px;flex-shrink:0;margin-left:4px"><i class="ti ti-trash"></i></button>
-    </div>`;
-  }).join('');
-}
-function updateShort(code,val){const p=PRODUCTS.find(x=>x.code===code);if(p){p.short=val.toUpperCase().trim();saveProductToDb(p);}}
-function updatePrice(code,field,val){
-  const p=PRODUCTS.find(x=>x.code===code);
-  if(!p)return;
-  const numVal=parseFloat(val)||0;
-  if(field==='retail_price') p.retail=numVal;
-  else if(field==='wholesale_price') p.wholesale=numVal;
-  if(p.prices) p.prices[field]=numVal;
-  savePriceToDb(code,field,val);
-}
-function deleteProduct(code){
-  if(!confirm('Remove this product?'))return;
-  PRODUCTS=PRODUCTS.filter(p=>p.code!==code);
-  deleteProductFromDb(code);
-  renderProductManager();
-}
-function addProduct(){
-  const code=prompt('Product code (e.g. DR008):');if(!code)return;
-  const name=prompt('Product name:');if(!name)return;
-  const p={code:code.toUpperCase().trim(),name,short:'',retail:0,wholesale:0,prices:{}};
-  PRODUCTS.push(p);
-  saveProductToDb(p);
-  sbUpsert('Prices',[{code:p.code,retail_price:0,wholesale_price:0}]);
-  renderProductManager();
-}
-function exportProductsCSV(){
-  const rows=[['Code','Name','Shorthand','Retail','Wholesale']];
-  PRODUCTS.forEach(p=>rows.push([p.code,p.name,p.short||'',p.retail,p.wholesale]));
-  downloadCSV(rows,'products.csv');
-}
-
-// ── CUSTOMER MANAGER ──────────────────────────────────────────────────────────
-function renderCustomerManager(){
-  document.getElementById('cm-grid').innerHTML=CUSTOMERS.map((c,ci)=>{
-    return `<div class="cm-card">
-      <div class="cm-name"><i class="ti ti-building-store" style="color:#9a9a97;font-size:16px"></i>${c.name}
-        <span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:6px">${c.accountNumber}</span>
-        <button onclick="removeCustomer(${ci})" style="margin-left:auto;background:none;border:none;cursor:pointer;color:#9a9a97;font-size:14px"><i class="ti ti-trash"></i></button>
-      </div>
-      <div class="cm-field"><label>Notes</label>
-        <textarea oninput="updateCustNote(${ci},this.value)" placeholder="e.g. Takes greaseproof cut to 12&quot;">${c.notes||''}</textarea>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
-        <div class="cm-field"><label>Price tier</label>
-          <input type="text" value="${c.tier||''}" onchange="updateCustTier(${ci},this.value)" placeholder="e.g. wholesale_price_1">
-        </div>
-        <div class="cm-field"><label>Fallback price</label>
-          <select onchange="updateCustFallback(${ci},this.value)">
-            <option value=""${!c.fallbackPrice?' selected':''}>— Retail (default) —</option>
-            <option value="retail_price"${c.fallbackPrice==='retail_price'?' selected':''}>Retail</option>
-            <option value="wholesale_price"${c.fallbackPrice==='wholesale_price'?' selected':''}>Wholesale</option>
-          </select>
-        </div>
-        <div class="cm-field"><label>Default route</label>
-          <select onchange="updateCustRoute(${ci},this.value)">
-            <option value="">— None —</option>
-            <option value="Brian"${c.defaultRoute==='Brian'?' selected':''}>Brian</option>
-            <option value="Chris"${c.defaultRoute==='Chris'?' selected':''}>Chris</option>
-            <option value="Ian"${c.defaultRoute==='Ian'?' selected':''}>Ian</option>
-            <option value="John"${c.defaultRoute==='John'?' selected':''}>John</option>
-            <option value="Mike"${c.defaultRoute==='Mike'?' selected':''}>Mike</option>
-            <option value="Misc"${c.defaultRoute==='Misc'?' selected':''}>Misc</option>
-            <option value="Nick"${c.defaultRoute==='Nick'?' selected':''}>Nick</option>
-            <option value="Steve"${c.defaultRoute==='Steve'?' selected':''}>Steve</option>
-          </select>
-        </div>
-      </div>
-      <div class="cm-field" style="margin-top:8px"><label>Price overrides</label>
-        <div style="display:flex;flex-direction:column;gap:4px">
-          ${CUSTOMER_OVERRIDES.filter(o=>o.accountNumber===c.accountNumber).map(o=>{
-            const prod=PRODUCTS.find(p=>p.code===o.productCode);
-            return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:4px 8px;background:var(--bg2);border-radius:6px">
-              <span>${prod?prod.name:o.productCode}</span>
-              <span style="display:flex;align-items:center;gap:6px">
-                <strong>£${Number(o.price).toFixed(2)}</strong>
-                <button onclick="removeOverride('${c.accountNumber}','${o.productCode}')" style="background:none;border:none;cursor:pointer;color:#9a9a97"><i class="ti ti-x"></i></button>
-              </span>
-            </div>`;
-          }).join('')}
-          <button class="btn" style="align-self:flex-start;height:26px;padding:0 8px;font-size:11px" onclick="addOverride(${ci})"><i class="ti ti-plus"></i> Add override</button>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
-}
-function updateCustTier(i,val){CUSTOMERS[i].tier=val;saveCustomerToDb(CUSTOMERS[i]);}
-function updateCustRoute(i,val){CUSTOMERS[i].defaultRoute=val;saveCustomerToDb(CUSTOMERS[i]);}
-function updateCustFallback(i,val){CUSTOMERS[i].fallbackPrice=val;saveCustomerToDb(CUSTOMERS[i]);}
-function addOverride(ci){
-  const c=CUSTOMERS[ci];
-  const search=prompt('Product code or name to search:');if(!search)return;
-  const matches=PRODUCTS.filter(p=>(p.name+' '+p.code).toLowerCase().includes(search.toLowerCase()));
-  if(!matches.length){alert('No matching product found.');return;}
-  let p=matches[0];
-  if(matches.length>1){
-    const list=matches.slice(0,10).map((m,i)=>`${i+1}. ${m.name} (${m.code})`).join('\n');
-    const choice=prompt(`Multiple matches found — enter a number:\n${list}`);
-    const idx=parseInt(choice)-1;
-    if(!matches[idx]){alert('Invalid selection.');return;}
-    p=matches[idx];
-  }
-  const priceStr=prompt(`Override price for ${p.name} (£):`);
-  const price=parseFloat(priceStr);
-  if(isNaN(price)||price<0){alert('Invalid price.');return;}
-  saveOverride(c.accountNumber,p.code,price);
-}
-async function saveOverride(accountNumber,productCode,price){
-  try{
-    await sbUpsert('customer_overrides',[{AccountNumber:accountNumber,ProductCode:productCode,Price:price}]);
-    const existing=CUSTOMER_OVERRIDES.find(o=>o.accountNumber===accountNumber&&o.productCode===productCode);
-    if(existing)existing.price=price;else CUSTOMER_OVERRIDES.push({accountNumber,productCode,price});
-    showSaveStatus('Saved');
-    renderCustomerManager();
-  }catch(e){console.error(e);showSaveStatus('Save failed',true);}
-}
-function removeOverride(accountNumber,productCode){
-  if(!confirm('Remove this price override?'))return;
-  CUSTOMER_OVERRIDES=CUSTOMER_OVERRIDES.filter(o=>!(o.accountNumber===accountNumber&&o.productCode===productCode));
-  sbDelete('customer_overrides',`?AccountNumber=eq.${encodeURIComponent(accountNumber)}&ProductCode=eq.${encodeURIComponent(productCode)}`)
-    .then(()=>showSaveStatus('Saved'))
-    .catch(e=>{console.error(e);showSaveStatus('Delete failed',true);});
-  renderCustomerManager();
-}
-function addCustomer(){
-  const name=prompt('Customer name:');if(!name)return;
-  if(CUSTOMERS.find(c=>c.name.toLowerCase()===name.toLowerCase())){alert('Customer already exists.');return;}
-  const accNum=prompt('Account number:');if(!accNum)return;
-  const c={name,accountNumber:accNum,tier:'',defaultRoute:'',fallbackPrice:''};
-  CUSTOMERS.push(c);
-  saveCustomerToDb(c).then(()=>{populateCustDropdown();renderCustomerManager();});
-}
-function removeCustomer(i){
-  if(!confirm(`Remove ${CUSTOMERS[i].name}?`))return;
-  const accNum=CUSTOMERS[i].accountNumber;
-  CUSTOMERS.splice(i,1);
-  deleteCustomerFromDb(accNum);
-  populateCustDropdown();renderCustomerManager();
-}
-function exportCustomersCSV(){
-  const rows=[['AccountNumber','AccountName','PriceTier','Route']];
-  CUSTOMERS.forEach(c=>rows.push([c.accountNumber,c.name,c.tier||'',c.defaultRoute||'']));
-  downloadCSV(rows,'customers.csv');
-}
-function updateCustNote(i,val){CUSTOMERS[i].notes=val;saveCustomerToDb(CUSTOMERS[i]);}
-
-// ── CSV UTILS ─────────────────────────────────────────────────────────────────
-function parseCSVText(text){
-  const lines=text.trim().split('\n');
-  const headers=lines[0].split(',').map(h=>h.replace(/^"|"$/g,'').trim().toLowerCase());
-  return lines.slice(1).filter(l=>l.trim()).map(line=>{
-    const vals=[];let cur='',inQ=false;
-    for(let i=0;i<line.length;i++){if(line[i]==='"'){inQ=!inQ;}else if(line[i]===','&&!inQ){vals.push(cur.trim());cur='';}else cur+=line[i];}
-    vals.push(cur.trim());
-    const row={};headers.forEach((h,i)=>row[h]=(vals[i]||'').replace(/^"|"$/g,'').trim());return row;
-  });
-}
-function downloadCSV(rows,filename){
-  const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
-  const blob=new Blob([csv],{type:'text/csv'});
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();
-}
-function showMsg(id,msg,type){
-  const el=document.getElementById(id);if(!el)return;
-  el.innerHTML=`<div class="msg-box msg-${type}"><i class="ti ti-${type==='success'?'check':'alert-triangle'}"></i>${msg}</div>`;
-  setTimeout(()=>{el.innerHTML='';},6000);
-}
-
-// ── INIT ──────────────────────────────────────────────────────────────────────
-function setDefaultDate(){const t=new Date();const day=t.getDay();if(day===5)t.setDate(t.getDate()+3);else if(day===6)t.setDate(t.getDate()+2);else t.setDate(t.getDate()+1);document.getElementById('del-date').value=`${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`;}
-
-function applyTheme(theme){
-  document.documentElement.setAttribute('data-theme', theme);
-  const btn = document.getElementById('theme-toggle-btn');
-  if(btn) btn.innerHTML = theme==='dark' ? '<i class="ti ti-sun"></i>' : '<i class="ti ti-moon"></i>';
-}
-function toggleTheme(){
-  const current = document.documentElement.getAttribute('data-theme')==='dark' ? 'dark' : 'light';
-  const next = current==='dark' ? 'light' : 'dark';
-  applyTheme(next);
-  try{ localStorage.setItem('wh_theme', next); }catch(e){}
-}
-function initTheme(){
+async function handleOAuthReturn() {
+  const params = new URLSearchParams(location.search);
+  const code = params.get('code');
+  if (!code) return;
   let saved = null;
-  try{ saved = localStorage.getItem('wh_theme'); }catch(e){}
-  if(!saved){
-    saved = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  try { saved = sessionStorage.getItem('sage_state'); sessionStorage.removeItem('sage_state'); } catch (_) {}
+  history.replaceState({}, '', location.pathname); // clean the URL immediately
+  if (saved && params.get('state') && saved !== params.get('state')) {
+    toast('Sage sign-in state mismatch — please press Connect again', true);
+    return;
   }
-  applyTheme(saved);
+  loading(true, 'Finishing Sage sign-in…');
+  try {
+    const r = await fn('exchange', { code });
+    toast(r.warning ? r.warning : 'Connected to Sage');
+    switchTab('sage');
+  } catch (err) {
+    toast('Sage connection failed: ' + err.message, true);
+    switchTab('sage');
+  } finally { loading(false); }
 }
 
-async function init(){
-  initTheme();
-  setDefaultDate();
-  addLine(false);
-  await loadData();
-  populateTypeDropdown();
-  populateCustDropdown();
-  updateBadges();
+$('sgSyncBtn').addEventListener('click', async () => {
+  loading(true, 'Syncing from Sage…');
+  const box = $('sgSummary');
+  try {
+    const r = await fn('sync');
+    const s = r.summary || {};
+    const parts = [];
+    parts.push('<b>Sync complete.</b> ' + (s.customers_fetched ?? 0) + ' customers fetched from Sage — ' +
+      (s.customers_created ?? 0) + ' new, ' + (s.customers_updated ?? 0) + ' updated. ' +
+      (s.price_bands ?? 0) + ' price bands.');
+    if (s.addresses_included === false) parts.push('<span class="badge b-err">Addresses unavailable this run</span>');
+    if (s.new_customers && s.new_customers.length) {
+      parts.push('<b>New customers (assign a route):</b><ul>' + s.new_customers.map((n) => '<li>' + esc(n) + '</li>').join('') + '</ul>');
+    }
+    if (s.unmapped_bands && s.unmapped_bands.length) {
+      parts.push('<b>Bands with no Prices column yet</b> — map them below, then sync again:<ul>' +
+        s.unmapped_bands.map((b) => '<li>' + esc(b.band_name) + ' (id ' + b.band_id + ') — ' + b.customers + ' customer(s)</li>').join('') + '</ul>');
+    }
+    if (s.warnings && s.warnings.length) {
+      parts.push('<b>Warnings:</b><ul>' + s.warnings.map((w) => '<li>' + esc(w) + '</li>').join('') + '</ul>');
+    }
+    box.innerHTML = parts.join('<br>');
+    box.classList.add('open');
+    toast('Sage sync complete');
+    await loadData();
+    renderBandMap();
+    loadSyncLog();
+    refreshSageStatus();
+  } catch (err) {
+    box.innerHTML = '<span class="badge b-err">Sync failed</span> ' + esc(err.message);
+    box.classList.add('open');
+    toast(err.message, true);
+  } finally { loading(false); }
+});
+
+function renderBandMap() {
+  const counts = {};
+  CUSTOMERS.forEach((c) => {
+    if (c.price_band_id != null) counts[c.price_band_id] = (counts[c.price_band_id] || 0) + 1;
+  });
+  const tb = $('bandBody');
+  if (!BAND_MAP.length) {
+    tb.innerHTML = '<tr><td colspan="4" class="empty">Run a sync to load bands from Sage</td></tr>';
+    return;
+  }
+  const opts = (sel) => '<option value="">— not mapped —</option>' +
+    PRICE_TIERS.map((t) => '<option' + (t === sel ? ' selected' : '') + '>' + esc(t) + '</option>').join('');
+  tb.innerHTML = BAND_MAP.slice().sort((a, b) => (counts[b.band_id] || 0) - (counts[a.band_id] || 0)).map((m) =>
+    '<tr>' +
+    '<td class="mono">' + esc(m.band_id) + '</td>' +
+    '<td>' + esc(m.band_name || '') + '</td>' +
+    '<td class="t-right">' + (counts[m.band_id] || 0) + '</td>' +
+    '<td><select data-band="' + esc(m.band_id) + '">' + opts(m.tier_column || '') + '</select></td>' +
+    '</tr>'
+  ).join('');
 }
-init();
+
+$('bandBody').addEventListener('change', async (e) => {
+  const sel = e.target.closest('[data-band]');
+  if (!sel) return;
+  try {
+    await sbPatch('price_band_map?band_id=eq.' + encodeURIComponent(sel.dataset.band), { tier_column: sel.value || null });
+    const m = BAND_MAP.find((x) => String(x.band_id) === String(sel.dataset.band));
+    if (m) m.tier_column = sel.value || null;
+    toast('Mapping saved — run Sync now to apply it to customers');
+  } catch (err) { toast(err.message, true); }
+});
+
+$('probeBtn').addEventListener('click', async () => {
+  const path = $('probePath').value.trim();
+  if (!path) { toast('Enter a Sage path, e.g. price_bands', true); return; }
+  const out = $('probeOut');
+  out.textContent = 'Calling Sage…';
+  out.classList.add('open');
+  try {
+    const r = await fn('probe', { path });
+    out.textContent = 'HTTP ' + r.status + '\n\n' + r.body;
+  } catch (err) {
+    out.textContent = 'Error: ' + err.message;
+  }
+});
+
+async function loadSyncLog() {
+  try {
+    const rows = await sbGet('sage_sync_log?select=*&order=id.desc&limit=10');
+    $('sgLogBody').innerHTML = rows && rows.length ? rows.map((r) => {
+      const s = r.summary || {};
+      const desc = r.status === 'ok'
+        ? (s.customers_fetched ?? 0) + ' customers · ' + (s.customers_created ?? 0) + ' new · ' + (s.customers_updated ?? 0) + ' updated'
+        : esc(r.error || 'failed');
+      return '<tr><td>' + new Date(r.started_at).toLocaleString('en-GB') + '</td>' +
+        '<td>' + (r.status === 'ok' ? '<span class="badge b-new">ok</span>' : '<span class="badge b-err">error</span>') + '</td>' +
+        '<td>' + desc + '</td></tr>';
+    }).join('') : '<tr><td colspan="3" class="empty">No syncs yet</td></tr>';
+  } catch (_) { /* table may not exist yet */ }
+}
+
+/* ═════════════════════════════ BACKUP ═══════════════════════════════════ */
+$('exportBtn').addEventListener('click', async () => {
+  loading(true, 'Building backup…');
+  try {
+    const [products, prices, customers, overrides, orders, lines] = await Promise.all([
+      sbGet('Products?select=*'), sbGet('Prices?select=*'), sbGet('Customers?select=*'),
+      sbGet('customer_overrides?select=*').catch(() => []),
+      sbGet('Orders?select=*'), sbGet('order_lines?select=*'),
+    ]);
+    const blob = new Blob([JSON.stringify({ exported: new Date().toISOString(), products, prices, customers, overrides, orders, lines }, null, 1)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'orders-backup-' + dISO() + '.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('Backup downloaded');
+  } catch (err) { toast(err.message, true); }
+  finally { loading(false); }
+});
+
+$('importFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  let data;
+  try { data = JSON.parse(await file.text()); }
+  catch (_) { toast('That file is not a valid backup', true); return; }
+  if (!confirm('Restore products, prices, customers and overrides from this backup?\n\nExisting records with the same keys are overwritten. Orders are not restored.')) return;
+  loading(true, 'Restoring backup…');
+  try {
+    if (Array.isArray(data.products) && data.products.length) {
+      await sbPost('Products?on_conflict=code', data.products, 'resolution=merge-duplicates,return=minimal');
+    }
+    if (Array.isArray(data.prices) && data.prices.length) {
+      await sbPost('Prices?on_conflict=code', data.prices, 'resolution=merge-duplicates,return=minimal');
+    }
+    if (Array.isArray(data.customers) && data.customers.length) {
+      for (let i = 0; i < data.customers.length; i += 300) {
+        await sbPost('Customers?on_conflict=account_number', data.customers.slice(i, i + 300), 'resolution=merge-duplicates,return=minimal');
+      }
+    }
+    if (Array.isArray(data.overrides) && data.overrides.length) {
+      await sbPost('customer_overrides?on_conflict=account_number,product_code', data.overrides, 'resolution=merge-duplicates,return=minimal');
+    }
+    toast('Backup restored');
+    await loadData();
+  } catch (err) { toast(err.message, true); }
+  finally { loading(false); }
+});
+
+/* ═════════════════════════════ BOOT ═════════════════════════════════════ */
+(async function boot() {
+  $('delDate').value = dISO(new Date(Date.now() + 86400000));
+  $('routeDate').value = dISO();
+  try {
+    await loadData();
+    $('dbDot').classList.add('ok');
+    $('dbLabel').textContent = CUSTOMERS.length + ' customers · ' + PRODUCTS.length + ' products';
+  } catch (err) {
+    $('dbDot').classList.add('bad');
+    $('dbLabel').textContent = 'database error';
+    toast('Could not load data: ' + err.message, true);
+  }
+  handleOAuthReturn();
+})();
