@@ -11,7 +11,7 @@ const CONFIG = {
   // Edge Function endpoint + shared key. APP_SHARED_KEY must be EXACTLY the
   // same string you saved as the APP_SHARED_KEY secret on the Edge Function.
   FUNCTIONS_URL: 'https://fcxtwaqrrrghysupbulz.supabase.co/functions/v1/sage',
-  APP_SHARED_KEY: 'set-a-long-random-string',                    // ← EDIT ME
+  APP_SHARED_KEY: 'j8s9]6CYOq*MmVUAzAYRy0-PmR_!x82"',                    // ← EDIT ME
 
   // Sage OAuth (the Client Secret lives ONLY in the Edge Function secrets)
   SAGE_CLIENT_ID: '89TPM5AcTd8NCGATTE3UviwDMsukxhMU',
