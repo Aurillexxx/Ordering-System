@@ -19,8 +19,8 @@ const CONFIG = {
 
   // Printed on delivery notes                                    // ← EDIT ME
   COMPANY: {
-    name: 'Your Company Name',
-    lines: ['Address line 1', 'Address line 2', 'Postcode', 'Tel: 0000 000000'],
+    name: 'Richmond Paper Supply',
+    lines: ['1-3 Forge Street', 'Bootle', 'L20 8JG', 'Tel: 0151 933 1000'],
   },
 
   ROUTES: ['Brian', 'Chris', 'Ian', 'John', 'Mike', 'Nick', 'Steve', 'Misc'],
