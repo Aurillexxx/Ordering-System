@@ -1291,23 +1291,27 @@ $('sgSyncProductsBtn').addEventListener('click', async () => {
 });
 
 async function loadSageProductMap() {
+  let rows;
   try {
-    const rows = await sbGet('sage_product_map?select=*&order=product_code.asc');
-    const mapped = new Set(rows.map((r) => r.product_code));
-    const unmapped = PRODUCTS.filter((p) => !mapped.has(p.code));
-    const tb = $('sgUnmappedBody');
-    if (!rows.length && !unmapped.length) {
-      tb.innerHTML = '<tr><td colspan="4" class="empty">Run Sync products to see mapping status</td></tr>';
-      return;
-    }
-    const mappedRows = rows.map((r) =>
-      '<tr><td class="mono">' + esc(r.product_code) + '</td><td class="mono">' + esc(r.sage_code || '') + '</td><td>' + esc(r.tax_code_id ?? '') + '</td><td><span class="badge b-new">mapped</span></td></tr>'
-    ).join('');
-    const unmappedRows = unmapped.map((p) =>
-      '<tr><td class="mono">' + esc(p.code) + '</td><td>—</td><td>—</td><td><span class="badge b-err">no Sage match</span></td></tr>'
-    ).join('');
-    tb.innerHTML = unmappedRows + mappedRows || '<tr><td colspan="4" class="empty">No products yet</td></tr>';
-  } catch (_) { /* table may not exist until migration runs */ }
+    rows = await sbGet('sage_product_map?select=*&order=product_code.asc');
+  } catch (err) {
+    $('sgUnmappedBody').innerHTML = '<tr><td colspan="4" class="empty">Could not load product mapping — ' + esc(err.message) + '</td></tr>';
+    return;
+  }
+  const mapped = new Set((rows || []).map((r) => r.product_code));
+  const unmapped = PRODUCTS.filter((p) => !mapped.has(p.code));
+  const tb = $('sgUnmappedBody');
+  if (!rows.length && !unmapped.length) {
+    tb.innerHTML = '<tr><td colspan="4" class="empty">Run Sync products to see mapping status</td></tr>';
+    return;
+  }
+  const mappedRows = rows.map((r) =>
+    '<tr><td class="mono">' + esc(r.product_code) + '</td><td class="mono">' + esc(r.sage_code || '') + '</td><td>' + esc(r.tax_code_id ?? '') + '</td><td><span class="badge b-new">mapped</span></td></tr>'
+  ).join('');
+  const unmappedRows = unmapped.map((p) =>
+    '<tr><td class="mono">' + esc(p.code) + '</td><td>—</td><td>—</td><td><span class="badge b-err">no Sage match</span></td></tr>'
+  ).join('');
+  tb.innerHTML = unmappedRows + mappedRows || '<tr><td colspan="4" class="empty">No products yet</td></tr>';
 }
 
 $('probeBtn').addEventListener('click', async () => {
