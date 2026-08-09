@@ -11,7 +11,7 @@ const CONFIG = {
   // Edge Function endpoint + shared key. APP_SHARED_KEY must be EXACTLY the
   // same string you saved as the APP_SHARED_KEY secret on the Edge Function.
   FUNCTIONS_URL: 'https://fcxtwaqrrrghysupbulz.supabase.co/functions/v1/sage',
-  APP_SHARED_KEY: 'j8s9]6CYOq*MmVUAzAYRy0-PmR_!x82"',                    // ← EDIT ME
+  APP_SHARED_KEY: 'j8s9]6CYOq*MmVUAzAYRy0-PmR_!x82',                    // ← EDIT ME
 
   // Sage OAuth (the Client Secret lives ONLY in the Edge Function secrets)
   SAGE_CLIENT_ID: '89TPM5AcTd8NCGATTE3UviwDMsukxhMU',
@@ -19,8 +19,8 @@ const CONFIG = {
 
   // Printed on delivery notes                                    // ← EDIT ME
   COMPANY: {
-    name: 'Richmond Paper Supply',
-    lines: ['1-3 Forge Street', 'Bootle', 'L20 8JG', 'Tel: 0151 933 1000'],
+    name: 'RICHMOND PAPER SUPPLY COMPANY (LIVERPOOL) LIMITED',
+    lines: ['1-3 Forge St', 'Bootle', 'L20 8JG', 'Tel: 0151 933 1000'],
   },
 
   ROUTES: ['Brian', 'Chris', 'Ian', 'John', 'Mike', 'Nick', 'Steve', 'Misc'],
@@ -271,7 +271,7 @@ function switchTab(name) {
   if (name === 'log') renderLog();
   if (name === 'products') renderProducts();
   if (name === 'customers') renderCustomers();
-  if (name === 'sage') { refreshSageStatus(); renderBandMap(); loadSyncLog(); }
+  if (name === 'sage') { refreshSageStatus(); renderBandMap(); loadSyncLog(); loadSageProductMap(); }
 }
 $('tabs').addEventListener('click', (e) => {
   const b = e.target.closest('.tab');
@@ -764,16 +764,20 @@ function renderLog() {
       '<div class="log-day">' + esc(dNice(day)) + '</div>' +
       byDay[day].slice().sort((a, b) => String(a.Route || '').localeCompare(String(b.Route || ''))).map((o) => {
         const c = custByAcct(o.AccountNumber);
+        const pushed = !!o.sage_order_id;
         return '<div class="log-item">' +
           '<span class="who">' + esc((c && c.account_name) || o.AccountNumber) +
           '<span class="acct">' + esc(o.AccountNumber) + '</span></span>' +
           (o.Route ? '<span class="badge b-route">' + esc(o.Route) + '</span>' : '') +
           '<span class="badge b-type">' + esc(o.OrderType || 'Custom') + '</span>' +
           (o.Picked ? '<span class="badge b-new">picked</span>' : '') +
+          (pushed ? '<span class="badge b-new" title="Sage document ' + esc(o.sage_document_no || '') + '">sage ✓</span>' : '') +
+          (o.sage_push_error && !pushed ? '<span class="badge b-err" title="' + esc(o.sage_push_error).slice(0, 200) + '">push failed</span>' : '') +
           '<span class="amt">' + money(o.Total) + '</span>' +
           '<button class="btn btn-small" data-lines="' + o.id + '">Lines</button>' +
           '<button class="btn btn-small" data-edit="' + o.id + '">Edit</button>' +
           '<button class="btn btn-small" data-print="' + o.id + '">Note</button>' +
+          (pushed ? '' : '<button class="btn btn-small" data-push="' + o.id + '">Push to Sage</button>') +
           '<button class="btn btn-small btn-danger" data-delete="' + o.id + '">✕</button>' +
           '</div>' +
           '<div class="log-lines" id="lines-' + o.id + '"><table>' +
@@ -795,6 +799,25 @@ $('logList').addEventListener('click', async (e) => {
   const edit = e.target.closest('[data-edit]');
   const print = e.target.closest('[data-print]');
   const del = e.target.closest('[data-delete]');
+  const push = e.target.closest('[data-push]');
+
+  if (push) {
+    const o = ORDERS.find((x) => x.id === +push.dataset.push);
+    if (!o) return;
+    const c = custByAcct(o.AccountNumber);
+    if (!confirm('Push this order for ' + ((c && c.account_name) || o.AccountNumber) + ' (' + money(o.Total) + ') to Sage as a real sales order?\n\nThis creates a live document in Sage — it is not a test.')) return;
+    loading(true, 'Pushing to Sage…');
+    try {
+      const r = await fn('pushOrder', { order_id: o.id });
+      o.sage_order_id = r.sage_order_id;
+      o.sage_document_no = r.sage_document_no;
+      toast('Pushed to Sage as ' + (r.sage_document_no || r.sage_order_id));
+      renderLog();
+    } catch (err) {
+      showError('Pushing to Sage failed', err);
+    } finally { loading(false); }
+    return;
+  }
 
   if (lines) $('lines-' + lines.dataset.lines).classList.toggle('open');
   if (edit) { const o = ORDERS.find((x) => x.id === +edit.dataset.edit); if (o) beginEditOrder(o); }
@@ -1077,6 +1100,7 @@ async function refreshSageStatus() {
     if (s.last_sync) bits.push('Last sync: ' + new Date(s.last_sync.started_at).toLocaleString('en-GB') + ' (' + s.last_sync.status + ')');
     $('sgMeta').textContent = bits.join('  ·  ');
     $('sgDisconnectBtn').style.display = s.connected ? '' : 'none';
+    $('sgChangeCompanyBtn').style.display = s.connected ? '' : 'none';
     $('sgConnectBtn').textContent = s.connected ? 'Reconnect' : 'Connect to Sage';
   } catch (err) {
     strip.classList.add('err');
@@ -1087,6 +1111,51 @@ async function refreshSageStatus() {
   }
 }
 
+function renderCompanyPicker(companies, currentCompanyId) {
+  const box = $('sgCompanyPicker');
+  if (!companies || !companies.length) {
+    box.classList.remove('open');
+    box.innerHTML = '';
+    return;
+  }
+  box.innerHTML = '<b>Choose the correct Sage company</b><br>' +
+    companies.map((c) => {
+      const isDemo = /demo/i.test(c.company_name || '');
+      const isCurrent = String(c.company_id) === String(currentCompanyId);
+      return '<div class="log-item">' +
+        '<span class="who">' + esc(c.company_name || '') +
+        (isDemo ? ' <span class="badge b-hold">demo</span>' : '') +
+        (isCurrent ? ' <span class="badge b-new">current</span>' : '') +
+        '<span class="acct">' + esc(c.site_name || '') + '</span></span>' +
+        '<button class="btn btn-small' + (isCurrent ? '' : ' btn-primary') + '" data-pickco="' + esc(c.company_id) + '" data-siteco="' + esc(c.site_id) + '">' +
+        (isCurrent ? 'Selected' : 'Use this company') + '</button>' +
+        '</div>';
+    }).join('');
+  box.classList.add('open');
+}
+
+$('sgCompanyPicker').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-pickco]');
+  if (!b) return;
+  loading(true, 'Switching company…');
+  try {
+    await fn('selectCompany', { company_id: b.dataset.pickco, site_id: b.dataset.siteco });
+    toast('Company updated — run Sync now to load its data');
+    $('sgCompanyPicker').classList.remove('open');
+    await refreshSageStatus();
+  } catch (err) { showError('Could not switch company', err); }
+  finally { loading(false); }
+});
+
+$('sgChangeCompanyBtn').addEventListener('click', async () => {
+  loading(true, 'Loading companies…');
+  try {
+    const s = await fn('status');
+    const r = await fn('sites');
+    renderCompanyPicker(r.companies, s.company_id);
+  } catch (err) { showError('Could not load Sage companies', err); }
+  finally { loading(false); }
+});
 $('sgConnectBtn').addEventListener('click', () => {
   const state = Math.random().toString(36).slice(2) + Date.now().toString(36);
   try { sessionStorage.setItem('sage_state', state); } catch (_) {}
@@ -1120,10 +1189,16 @@ async function handleOAuthReturn() {
   loading(true, 'Finishing Sage sign-in…');
   try {
     const r = await fn('exchange', { code });
-    toast(r.warning ? r.warning : 'Connected to Sage');
-    switchTab('sage');
+    if (r.needs_company_selection) {
+      toast('Connected — choose which company to use');
+      switchTab('sage');
+      renderCompanyPicker(r.companies, null);
+    } else {
+      toast(r.warning ? r.warning : ('Connected to ' + (r.company_name || 'Sage')));
+      switchTab('sage');
+    }
   } catch (err) {
-    toast('Sage connection failed: ' + err.message, true);
+    showError('Sage connection failed', err);
     switchTab('sage');
   } finally { loading(false); }
 }
@@ -1195,6 +1270,45 @@ $('bandBody').addEventListener('change', async (e) => {
     toast('Mapping saved — run Sync now to apply it to customers');
   } catch (err) { toast(err.message, true); }
 });
+
+$('sgSyncProductsBtn').addEventListener('click', async () => {
+  loading(true, 'Syncing products from Sage…');
+  const box = $('sgProductSummary');
+  try {
+    const r = await fn('syncProducts');
+    const s = r.summary || {};
+    box.innerHTML = '<b>Product sync complete.</b> ' + (s.sage_products_fetched ?? 0) + ' products fetched from Sage — ' +
+      (s.matched_to_your_products ?? 0) + ' matched to your products' +
+      (s.your_products_still_unmapped ? '. <span class="badge b-err">' + s.your_products_still_unmapped + ' of your products have no Sage match</span> — check their codes match exactly.' : '.');
+    box.classList.add('open');
+    toast('Product sync complete');
+    await loadSageProductMap();
+  } catch (err) {
+    box.innerHTML = '<span class="badge b-err">Sync failed</span> ' + esc(err.message);
+    box.classList.add('open');
+    showError('Product sync failed', err);
+  } finally { loading(false); }
+});
+
+async function loadSageProductMap() {
+  try {
+    const rows = await sbGet('sage_product_map?select=*&order=product_code.asc');
+    const mapped = new Set(rows.map((r) => r.product_code));
+    const unmapped = PRODUCTS.filter((p) => !mapped.has(p.code));
+    const tb = $('sgUnmappedBody');
+    if (!rows.length && !unmapped.length) {
+      tb.innerHTML = '<tr><td colspan="4" class="empty">Run Sync products to see mapping status</td></tr>';
+      return;
+    }
+    const mappedRows = rows.map((r) =>
+      '<tr><td class="mono">' + esc(r.product_code) + '</td><td class="mono">' + esc(r.sage_code || '') + '</td><td>' + esc(r.tax_code_id ?? '') + '</td><td><span class="badge b-new">mapped</span></td></tr>'
+    ).join('');
+    const unmappedRows = unmapped.map((p) =>
+      '<tr><td class="mono">' + esc(p.code) + '</td><td>—</td><td>—</td><td><span class="badge b-err">no Sage match</span></td></tr>'
+    ).join('');
+    tb.innerHTML = unmappedRows + mappedRows || '<tr><td colspan="4" class="empty">No products yet</td></tr>';
+  } catch (_) { /* table may not exist until migration runs */ }
+}
 
 $('probeBtn').addEventListener('click', async () => {
   const path = $('probePath').value.trim();

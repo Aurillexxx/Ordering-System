@@ -212,10 +212,12 @@
     <div class="modal-actions" style="margin-top:0">
       <button class="btn btn-danger btn-small" id="sgDisconnectBtn" style="display:none">Disconnect</button>
       <div class="right">
+        <button class="btn btn-small" id="sgChangeCompanyBtn" style="display:none">Change company</button>
         <button class="btn" id="sgConnectBtn">Connect to Sage</button>
         <button class="btn btn-primary" id="sgSyncBtn">Sync now</button>
       </div>
     </div>
+    <div class="sync-summary" id="sgCompanyPicker"></div>
     <p class="hint">Sync pulls customers and price bands <b>from</b> Sage into this system. It updates names, addresses, phone, email, balance, on-hold status and price band. It never touches Route, Notes, fallback price, your products/prices, or any orders — and it never writes anything back to Sage.</p>
     <div class="sync-summary" id="sgSummary"></div>
   </div>
@@ -229,6 +231,24 @@
       </table>
     </div>
     <p class="hint">After changing a mapping, run <b>Sync now</b> again to apply it to customers.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2>Sage order push <span class="badge b-hold" style="vertical-align:2px">test feature</span></h2>
+      <span class="sub">Creates real sales orders in Sage — push individual orders manually from the Order log</span>
+    </div>
+    <div class="modal-actions" style="margin-top:0">
+      <div class="right"><button class="btn btn-primary" id="sgSyncProductsBtn">Sync products</button></div>
+    </div>
+    <p class="hint">Matches your product codes to Sage's product records (needed before any order can be pushed). Run this before pushing your first test order, and again whenever you add new products.</p>
+    <div class="sync-summary" id="sgProductSummary"></div>
+    <div class="tbl-scroll" style="margin-top:10px">
+      <table class="tbl">
+        <thead><tr><th>Your code</th><th>Sage code</th><th>Tax code id</th><th></th></tr></thead>
+        <tbody id="sgUnmappedBody"><tr><td colspan="4" class="empty">Run Sync products to see mapping status</td></tr></tbody>
+      </table>
+    </div>
   </div>
 
   <div class="card">
@@ -319,6 +339,6 @@
 <div class="loading" id="loading"><div class="box"><span class="spin"></span><span id="loadingText">Working…</span></div></div>
 <div id="printRoot"></div>
 
-<script src="app.js?v=3.0.1"></script>
+<script src="app.js?v=3.1.0"></script>
 </body>
 </html>
