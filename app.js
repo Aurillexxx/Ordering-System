@@ -11,7 +11,7 @@ const CONFIG = {
   // Edge Function endpoint + shared key. APP_SHARED_KEY must be EXACTLY the
   // same string you saved as the APP_SHARED_KEY secret on the Edge Function.
   FUNCTIONS_URL: 'https://fcxtwaqrrrghysupbulz.supabase.co/functions/v1/sage',
-  APP_SHARED_KEY: 'j8s9]6CYOq*MmVUAzAYRy0-PmR_!x82"',                    // ← EDIT ME
+  APP_SHARED_KEY: 'set-a-long-random-string',                    // ← EDIT ME
 
   // Sage OAuth (the Client Secret lives ONLY in the Edge Function secrets)
   SAGE_CLIENT_ID: '89TPM5AcTd8NCGATTE3UviwDMsukxhMU',
@@ -19,11 +19,11 @@ const CONFIG = {
 
   // Printed on delivery notes                                    // ← EDIT ME
   COMPANY: {
-    name: 'RICHMOND PAPER SUPPLY COMPANY (LIVERPOOL) LIMITED',
-    lines: ['1-3 Forge St', 'Bootle', 'L20 8JG', 'Tel: 0151 933 1000'],
+    name: 'Your Company Name',
+    lines: ['Address line 1', 'Address line 2', 'Postcode', 'Tel: 0000 000000'],
   },
 
-  ROUTES: ['Brian', 'Chris', 'Ian', 'John', 'Mike', 'Nick', 'Steve', 'Misc', 'Collect'],
+  ROUTES: ['Brian', 'Chris', 'Ian', 'John', 'Mike', 'Nick', 'Steve', 'Misc'],
 };
 
 const TYPE_TO_COL = {
@@ -107,6 +107,59 @@ async function fn(action, payload) {
   return data;
 }
 
+/* ─────────────────────── copyable error dialog ─────────────────────────── */
+function showError(context, err) {
+  const msg = (err && err.message) ? err.message : String(err);
+  $('errContext').textContent = context;
+  $('errText').value = context + '\n\n' + msg + '\n\n' + new Date().toLocaleString('en-GB');
+  $('errModal').classList.add('open');
+  console.error(context, err);
+}
+$('errCloseBtn').addEventListener('click', () => $('errModal').classList.remove('open'));
+$('errModal').addEventListener('click', (e) => { if (e.target === $('errModal')) $('errModal').classList.remove('open'); });
+$('errCopyBtn').addEventListener('click', () => {
+  const ta = $('errText');
+  ta.select();
+  const done = () => toast('Copied');
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(ta.value).then(done, () => { document.execCommand('copy'); done(); });
+  else { document.execCommand('copy'); done(); }
+});
+
+/* ────────────── self-healing writes (survive missing columns) ───────────────
+   If the live table lacks an optional column this app sends (PostgREST error
+   PGRST204: "Could not find the 'X' column …"), strip that field and retry,
+   so small schema differences never block saving an order. Essential columns
+   are never stripped — those errors surface properly. */
+const ESSENTIAL_COLS = {
+  Orders: ['AccountNumber', 'DeliveryDate', 'Total'],
+  order_lines: ['OrderId', 'ProductCode', 'Qty', 'Price'],
+};
+function missingColFrom(message) {
+  const m = /'([^']+)' column/i.exec(message) || /column "([^"]+)"/i.exec(message);
+  return m ? m[1] : null;
+}
+async function writeWithFallback(method, table, query, body, prefer) {
+  const isArray = Array.isArray(body);
+  let payload = isArray ? body.map((r) => Object.assign({}, r)) : Object.assign({}, body);
+  const essentials = ESSENTIAL_COLS[table] || [];
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      return await sb(method, table + (query || ''), payload, prefer);
+    } catch (err) {
+      const col = missingColFrom(err.message);
+      const sample = isArray ? payload[0] : payload;
+      if (col && sample && Object.prototype.hasOwnProperty.call(sample, col) && !essentials.includes(col)) {
+        console.warn('Column "' + col + '" not found in ' + table + ' — retrying without it');
+        if (isArray) payload = payload.map((r) => { const c = Object.assign({}, r); delete c[col]; return c; });
+        else delete payload[col];
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('Save failed after several retries — copy the previous error and send it to me.');
+}
+
 /* ───────────────────────────── state ────────────────────────────────────── */
 let PRODUCTS = [];      // { code, name, shorthand, prices:{col:val} }
 let PRICE_TIERS = [];   // Prices columns except 'code'
@@ -115,9 +168,18 @@ let ORDERS = [];        // rows from Orders, each with .lines[]
 let OVERRIDES = [];     // rows from customer_overrides
 let BAND_MAP = [];      // rows from price_band_map
 let ROUTES = [];
+let TIER_LOOKUP = {};   // normalised tier name -> real Prices column
 
 const custByAcct = (a) => CUSTOMERS.find((c) => c.account_number === a);
 const prodByCode = (c) => PRODUCTS.find((p) => p.code === c);
+
+/* Resolve a stored band/tier value to a real Prices column, forgiving
+   stray spaces and capitalisation (e.g. "Harlequin " -> "Harlequin"). */
+function resolveTierCol(name) {
+  if (!name) return null;
+  if (PRICE_TIERS.includes(name)) return name;
+  return TIER_LOOKUP[String(name).trim().toLowerCase()] || null;
+}
 
 async function loadData() {
   const [products, prices, customers, orders, lines, overrides, bands] = await Promise.all([
@@ -137,6 +199,9 @@ async function loadData() {
   const cols = prices && prices.length ? Object.keys(prices[0]).filter((k) => k !== 'code') : preferred.slice();
   PRICE_TIERS = preferred.filter((c) => cols.includes(c))
     .concat(cols.filter((c) => !preferred.includes(c)).sort((a, b) => a.localeCompare(b)));
+
+  TIER_LOOKUP = {};
+  PRICE_TIERS.forEach((c) => { TIER_LOOKUP[c.trim().toLowerCase()] = c; });
 
   PRODUCTS = (products || []).map((p) => ({
     code: p.code, name: p.name || '', shorthand: p.shorthand || '',
@@ -187,8 +252,9 @@ function priceFor(code, cust, orderType) {
   if (cust) {
     const ov = OVERRIDES.find((o) => o.account_number === cust.account_number && o.product_code === code);
     if (ov) return num(ov.price);
-    if (cust.price_band && row[cust.price_band] !== undefined && row[cust.price_band] !== null && row[cust.price_band] !== '') {
-      return num(row[cust.price_band]);
+    const tierCol = resolveTierCol(cust.price_band);
+    if (tierCol && row[tierCol] !== undefined && row[tierCol] !== null && row[tierCol] !== '') {
+      return num(row[tierCol]);
     }
     const fb = String(cust.fallback_price || '').toLowerCase();
     if (fb.indexOf('ret') !== -1) return num(row.retail_price);
@@ -285,7 +351,14 @@ function renderCustPanel() {
   $('cpHold').style.display = c.on_hold ? '' : 'none';
   const meta = [];
   meta.push('Acct ' + (c.account_number || '—'));
-  meta.push('Tier: ' + (c.price_band || 'fallback ' + (c.fallback_price || 'Wholesale')));
+  const tierCol = resolveTierCol(c.price_band);
+  if (tierCol) {
+    meta.push('Tier: ' + tierCol);
+  } else if (c.price_band) {
+    meta.push('⚠ tier “' + c.price_band + '” is not a Prices column — using fallback ' + (c.fallback_price || 'Wholesale'));
+  } else {
+    meta.push('Tier: none — fallback ' + (c.fallback_price || 'Wholesale'));
+  }
   if (c.Route) meta.push('Route: ' + c.Route);
   $('cpMeta').textContent = meta.join('  ·  ');
   const addr = [c.address_1, c.address_2, c.address_3, c.city, c.postcode].filter(Boolean).join(', ');
@@ -313,19 +386,44 @@ attachDropdown($('custSearch'), $('custResults'), searchCustomers, (c) => {
          (c.Route ? '<span class="badge b-route">' + esc(c.Route) + '</span>' : '') + bal + '</span>';
 }, selectCustomer);
 
+let pendingProd = null;
+
 attachDropdown($('prodSearch'), $('prodResults'), searchProducts, (p) => {
   const price = currentCustomer || $('orderType').value !== 'Custom'
     ? money(priceFor(p.code, currentCustomer, $('orderType').value)) : '';
   return '<span class="dd-main">' + esc(p.name) + '</span>' +
          '<span class="dd-side"><span class="mono">' + esc(p.code) + '</span><span>' + price + '</span></span>';
-}, (p) => { addLine(p); $('prodSearch').value = ''; $('prodSearch').focus(); });
+}, (p) => {
+  pendingProd = p;
+  $('prodSearch').value = p.name + '  (' + p.code + ')';
+  $('addQty').focus();
+  $('addQty').select();
+});
 
-function addLine(p) {
+// typing in the search again abandons the previous selection
+$('prodSearch').addEventListener('input', () => { pendingProd = null; });
+
+function commitAddLine() {
+  if (!pendingProd) { toast('Pick a product first', true); $('prodSearch').focus(); return; }
+  const qty = Math.max(1, Math.round(num($('addQty').value)) || 1);
+  addLine(pendingProd, qty);
+  pendingProd = null;
+  $('prodSearch').value = '';
+  $('addQty').value = 1;
+  $('prodSearch').focus();
+}
+$('addLineBtn').addEventListener('click', commitAddLine);
+$('addQty').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); commitAddLine(); }
+});
+
+function addLine(p, qty) {
+  const q = Math.max(1, Math.round(num(qty)) || 1);
   const existing = currentLines.find((l) => l.code === p.code);
-  if (existing) { existing.qty += 1; renderLines(); return; }
+  if (existing) { existing.qty += q; renderLines(); return; }
   currentLines.push({
     code: p.code, name: p.name, shorthand: p.shorthand,
-    qty: 1,
+    qty: q,
     price: priceFor(p.code, currentCustomer, $('orderType').value),
     manual: false,
   });
@@ -412,22 +510,22 @@ $('saveOrderBtn').addEventListener('click', async () => {
   try {
     let orderId = editingOrderId;
     if (editingOrderId) {
-      await sbPatch('Orders?id=eq.' + editingOrderId, order);
+      await writeWithFallback('PATCH', 'Orders', '?id=eq.' + editingOrderId, order, 'return=minimal');
       await sbDelete('order_lines?OrderId=eq.' + editingOrderId);
     } else {
       order.CreatedAt = new Date().toISOString();
       order.Picked = false;
-      const rows = await sbPost('Orders', [order], 'return=representation');
+      const rows = await writeWithFallback('POST', 'Orders', '', [order], 'return=representation');
       orderId = rows[0].id;
     }
-    await sbPost('order_lines', lines.map((l) => ({
+    await writeWithFallback('POST', 'order_lines', '', lines.map((l) => ({
       OrderId: orderId, ProductCode: l.code, ProductName: l.name, Qty: l.qty, Price: l.price,
     })), 'return=minimal');
     toast(editingOrderId ? 'Order updated' : 'Order saved');
     resetOrderForm();
     await loadData();
   } catch (err) {
-    toast(err.message, true);
+    showError('Saving the order failed', err);
   } finally { loading(false); }
 });
 
@@ -872,7 +970,7 @@ function openCustomerModal(c) {
   $('cmTitle').textContent = c.account_number + ' — ' + (c.account_name || '');
   $('cmName').value = c.account_name || '';
   $('cmRoute').value = c.Route || '';
-  $('cmBand').value = c.price_band || '';
+  $('cmBand').value = resolveTierCol(c.price_band) || '';
   $('cmFallback').value = /ret/i.test(c.fallback_price || '') ? 'Retail' : 'Wholesale';
   $('cmNotes').value = c.Notes || '';
   $('cmPhone').value = c.phone || '';
@@ -1061,7 +1159,7 @@ $('sgSyncBtn').addEventListener('click', async () => {
   } catch (err) {
     box.innerHTML = '<span class="badge b-err">Sync failed</span> ' + esc(err.message);
     box.classList.add('open');
-    toast(err.message, true);
+    showError('Sage sync failed', err);
   } finally { loading(false); }
 });
 
