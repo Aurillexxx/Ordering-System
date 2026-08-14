@@ -1238,7 +1238,15 @@ $('sgSyncBtn').addEventListener('click', async () => {
   } finally { loading(false); }
 });
 
-function renderBandMap() {
+async function renderBandMap() {
+  let rows;
+  try {
+    rows = await sbGet('price_band_map?select=*&order=band_id.asc');
+  } catch (err) {
+    $('bandBody').innerHTML = '<tr><td colspan="4" class="empty">Could not load price bands — ' + esc(err.message) + '</td></tr>';
+    return;
+  }
+  BAND_MAP = rows || [];
   const counts = {};
   CUSTOMERS.forEach((c) => {
     if (c.price_band_id != null) counts[c.price_band_id] = (counts[c.price_band_id] || 0) + 1;
